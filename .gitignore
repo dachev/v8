@@ -1,6 +1,5 @@
-.svn
+.*
 obj
-.sconsign.dblite
 libv8.a
 libv8.dylib
 shell
