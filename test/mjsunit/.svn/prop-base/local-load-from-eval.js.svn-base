@@ -1,9 +1,0 @@
-K 13
-svn:eol-style
-V 6
-native
-K 13
-svn:mergeinfo
-V 90
-/branches/bleeding_edge/test/mjsunit/local-load-from-eval.js:1170-1260,1262-1276,1278-1297
-END
