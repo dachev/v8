@@ -1,0 +1,13 @@
+obj
+.sconsign.dblite
+libv8.a
+libv8.dylib
+shell
+test/cctest/testcfg.pyc
+test/message/testcfg.pyc
+test/mjsunit/testcfg.pyc
+test/mozilla/testcfg.pyc
+tools/js2c.pyc
+tools/jsmin.pyc
+tools/test.pyc
+tools/utils.pyc
