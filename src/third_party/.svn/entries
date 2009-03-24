@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<wc-entries
+   xmlns="svn:">
+<entry
+   committed-rev="1355"
+   name=""
+   committed-date="2009-02-25T08:08:01.588464Z"
+   url="http://v8.googlecode.com/svn/branches/bleeding_edge/src/third_party"
+   last-author="erik.corry@gmail.com"
+   kind="dir"
+   uuid="ce2b1a6d-e550-0410-aec6-3dcde31c8c00"
+   repos="http://v8.googlecode.com/svn"
+   revision="1582"/>
+<entry
+   name="dtoa"
+   kind="dir"/>
+</wc-entries>

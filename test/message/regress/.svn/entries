@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="utf-8"?>
+<wc-entries
+   xmlns="svn:">
+<entry
+   committed-rev="1389"
+   name=""
+   committed-date="2009-02-27T13:00:32.400412Z"
+   url="http://v8.googlecode.com/svn/branches/bleeding_edge/test/message/regress"
+   last-author="kmillikin@chromium.org"
+   kind="dir"
+   uuid="ce2b1a6d-e550-0410-aec6-3dcde31c8c00"
+   repos="http://v8.googlecode.com/svn"
+   revision="1582"/>
+<entry
+   committed-rev="565"
+   name="regress-73.out"
+   text-time="2009-03-13T02:43:19.000000Z"
+   committed-date="2008-10-23T08:40:19.012798Z"
+   checksum="3ce7ad50078d34b154986cea799bc3ca"
+   last-author="sgjesse@chromium.org"
+   kind="file"
+   prop-time="2009-03-13T02:43:19.000000Z"/>
+<entry
+   committed-rev="1389"
+   name="regress-75.out"
+   text-time="2009-03-13T02:43:19.000000Z"
+   committed-date="2009-02-27T13:00:32.400412Z"
+   checksum="ca24c1e81f065491132e215a5a659ce3"
+   last-author="kmillikin@chromium.org"
+   kind="file"
+   prop-time="2009-03-13T02:43:19.000000Z"/>
+<entry
+   committed-rev="565"
+   name="regress-73.js"
+   text-time="2009-03-13T02:43:19.000000Z"
+   committed-date="2008-10-23T08:40:19.012798Z"
+   checksum="61472aa4f4e22fcc9ca5df97021d9c4c"
+   last-author="sgjesse@chromium.org"
+   kind="file"
+   prop-time="2009-03-13T02:43:19.000000Z"/>
+<entry
+   committed-rev="1389"
+   name="regress-75.js"
+   text-time="2009-03-13T02:43:19.000000Z"
+   committed-date="2009-02-27T13:00:32.400412Z"
+   checksum="bc1ca9c5c0206422d6f20d9005f5ef33"
+   last-author="kmillikin@chromium.org"
+   kind="file"
+   prop-time="2009-03-13T02:43:19.000000Z"/>
+</wc-entries>

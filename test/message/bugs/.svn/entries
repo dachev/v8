@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<wc-entries
+   xmlns="svn:">
+<entry
+   committed-rev="565"
+   name=""
+   committed-date="2008-10-23T08:40:19.012798Z"
+   url="http://v8.googlecode.com/svn/branches/bleeding_edge/test/message/bugs"
+   last-author="sgjesse@chromium.org"
+   kind="dir"
+   uuid="ce2b1a6d-e550-0410-aec6-3dcde31c8c00"
+   repos="http://v8.googlecode.com/svn"
+   revision="1582"/>
+</wc-entries>

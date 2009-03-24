@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="utf-8"?>
+<wc-entries
+   xmlns="svn:">
+<entry
+   committed-rev="1582"
+   name=""
+   committed-date="2009-03-24T00:48:17.988333Z"
+   url="http://v8.googlecode.com/svn/branches/bleeding_edge"
+   last-author="christian.plesner.hansen"
+   kind="dir"
+   uuid="ce2b1a6d-e550-0410-aec6-3dcde31c8c00"
+   repos="http://v8.googlecode.com/svn"
+   prop-time="2009-03-13T02:45:11.000000Z"
+   revision="1582"/>
+<entry
+   name="test"
+   kind="dir"/>
+<entry
+   name="tools"
+   kind="dir"/>
+<entry
+   committed-rev="1355"
+   name="LICENSE"
+   text-time="2009-03-13T02:45:11.000000Z"
+   committed-date="2009-02-25T08:08:01.588464Z"
+   checksum="48805d7ed561de2da38caca573e259e3"
+   last-author="erik.corry@gmail.com"
+   kind="file"
+   prop-time="2009-03-13T02:44:02.000000Z"/>
+<entry
+   name="include"
+   kind="dir"/>
+<entry
+   name="samples"
+   kind="dir"/>
+<entry
+   committed-rev="1356"
+   name="AUTHORS"
+   text-time="2009-03-13T02:45:11.000000Z"
+   committed-date="2009-02-25T10:09:42.731456Z"
+   checksum="88c7f0aef916e005340278667ce7db8a"
+   last-author="sgjesse@chromium.org"
+   kind="file"
+   prop-time="2009-03-13T02:44:02.000000Z"/>
+<entry
+   name="src"
+   kind="dir"/>
+<entry
+   committed-rev="1500"
+   name="ChangeLog"
+   text-time="2009-03-13T02:45:11.000000Z"
+   committed-date="2009-03-12T14:10:44.811198Z"
+   checksum="291655292a8b0fcad49327417b3a801b"
+   last-author="ager@chromium.org"
+   kind="file"
+   prop-time="2009-03-13T02:45:10.000000Z"/>
+<entry
+   committed-rev="1574"
+   name="SConstruct"
+   text-time="2009-03-24T01:54:59.000000Z"
+   committed-date="2009-03-23T12:37:53.079293Z"
+   checksum="09f0cd4452d35ca2451cecd5c92f3cec"
+   last-author="erik.corry@gmail.com"
+   kind="file"
+   prop-time="2009-03-24T01:54:59.000000Z"/>
+<entry
+   name="benchmarks"
+   kind="dir"/>
+</wc-entries>

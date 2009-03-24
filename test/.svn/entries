@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<wc-entries
+   xmlns="svn:">
+<entry
+   committed-rev="1582"
+   name=""
+   committed-date="2009-03-24T00:48:17.988333Z"
+   url="http://v8.googlecode.com/svn/branches/bleeding_edge/test"
+   last-author="christian.plesner.hansen"
+   kind="dir"
+   uuid="ce2b1a6d-e550-0410-aec6-3dcde31c8c00"
+   repos="http://v8.googlecode.com/svn"
+   revision="1582"/>
+<entry
+   name="message"
+   kind="dir"/>
+<entry
+   name="cctest"
+   kind="dir"/>
+<entry
+   name="mozilla"
+   kind="dir"/>
+<entry
+   name="mjsunit"
+   kind="dir"/>
+</wc-entries>

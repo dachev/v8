@@ -1,0 +1,194 @@
+<?xml version="1.0" encoding="utf-8"?>
+<wc-entries
+   xmlns="svn:">
+<entry
+   committed-rev="1427"
+   name=""
+   committed-date="2009-03-05T11:35:44.945198Z"
+   url="http://v8.googlecode.com/svn/branches/bleeding_edge/tools/visual_studio"
+   last-author="mikhail.naganov@gmail.com"
+   kind="dir"
+   uuid="ce2b1a6d-e550-0410-aec6-3dcde31c8c00"
+   repos="http://v8.googlecode.com/svn"
+   revision="1582"/>
+<entry
+   committed-rev="1176"
+   name="v8_snapshot_cc.vcproj"
+   text-time="2009-03-13T02:44:02.000000Z"
+   committed-date="2009-01-27T16:20:10.055869Z"
+   checksum="3a3b05198e6f01c6e2a51c710d80dfd1"
+   last-author="maruel@chromium.org"
+   kind="file"
+   prop-time="2009-03-13T02:44:02.000000Z"/>
+<entry
+   committed-rev="719"
+   name="v8_arm.sln"
+   text-time="2009-03-13T02:44:02.000000Z"
+   committed-date="2008-11-07T17:21:11.905907Z"
+   checksum="4ac122c9290fdaf3b030d9edf28a6364"
+   last-author="feng@chromium.org"
+   kind="file"
+   prop-time="2009-03-13T02:44:02.000000Z"/>
+<entry
+   committed-rev="1349"
+   name="v8_shell_sample.vcproj"
+   text-time="2009-03-13T02:44:02.000000Z"
+   committed-date="2009-02-24T13:32:01.598259Z"
+   checksum="81a411c44b87dfb46ffcd113ab6d5b5a"
+   last-author="sgjesse@chromium.org"
+   kind="file"
+   prop-time="2009-03-13T02:44:02.000000Z"/>
+<entry
+   committed-rev="1176"
+   name="v8.sln"
+   text-time="2009-03-13T02:44:02.000000Z"
+   committed-date="2009-01-27T16:20:10.055869Z"
+   checksum="cd25dd22d5e04273cb88e21f43654ca9"
+   last-author="maruel@chromium.org"
+   kind="file"
+   prop-time="2009-03-13T02:44:02.000000Z"/>
+<entry
+   committed-rev="1389"
+   name="v8_base_arm.vcproj"
+   text-time="2009-03-13T02:44:02.000000Z"
+   committed-date="2009-02-27T13:00:32.400412Z"
+   checksum="8d5784111d05c02a91128a551a2fc381"
+   last-author="kmillikin@chromium.org"
+   kind="file"
+   prop-time="2009-03-13T02:44:02.000000Z"/>
+<entry
+   committed-rev="1427"
+   name="v8_base.vcproj"
+   text-time="2009-03-13T02:44:02.000000Z"
+   committed-date="2009-03-05T11:35:44.945198Z"
+   checksum="23929d82bf9f5dc52d4d8086a7212d38"
+   last-author="mikhail.naganov@gmail.com"
+   kind="file"
+   prop-time="2009-03-13T02:44:02.000000Z"/>
+<entry
+   committed-rev="743"
+   name="arm.vsprops"
+   text-time="2009-03-13T02:44:02.000000Z"
+   committed-date="2008-11-12T22:57:04.184670Z"
+   checksum="93d20fec6af6cc1c3dd4a804601b1cbf"
+   last-author="feng@chromium.org"
+   kind="file"
+   prop-time="2009-03-13T02:44:02.000000Z"/>
+<entry
+   committed-rev="407"
+   name="release.vsprops"
+   text-time="2009-03-13T02:44:02.000000Z"
+   committed-date="2008-10-02T09:41:01.928914Z"
+   checksum="53f77ca6453e481c4fe77226c7338545"
+   last-author="sgjesse@chromium.org"
+   kind="file"
+   prop-time="2009-03-13T02:44:02.000000Z"/>
+<entry
+   committed-rev="1349"
+   name="v8_process_sample.vcproj"
+   text-time="2009-03-13T02:44:02.000000Z"
+   committed-date="2009-02-24T13:32:01.598259Z"
+   checksum="628e6c94c338e9b3b2808b7bfbdf5820"
+   last-author="sgjesse@chromium.org"
+   kind="file"
+   prop-time="2009-03-13T02:44:02.000000Z"/>
+<entry
+   committed-rev="596"
+   name="d8js2c.cmd"
+   text-time="2009-03-13T02:44:02.000000Z"
+   committed-date="2008-10-27T07:52:59.921647Z"
+   checksum="64997ba04c4aa724645b5963a3926246"
+   last-author="sgjesse@chromium.org"
+   kind="file"
+   prop-time="2009-03-13T02:44:02.000000Z"/>
+<entry
+   committed-rev="263"
+   name="v8.vcproj"
+   text-time="2009-03-13T02:44:02.000000Z"
+   committed-date="2008-09-11T08:05:45.540328Z"
+   checksum="8b31de533127119670f6cfef6bcb25ba"
+   last-author="sgjesse@chromium.org"
+   kind="file"
+   prop-time="2009-03-13T02:44:02.000000Z"/>
+<entry
+   committed-rev="13"
+   name="debug.vsprops"
+   text-time="2009-03-13T02:44:02.000000Z"
+   committed-date="2008-08-13T09:32:07.039344Z"
+   checksum="52421515a7145e506f971efdbd5c4fc4"
+   last-author="mads.s.ager"
+   kind="file"
+   prop-time="2009-03-13T02:44:02.000000Z"/>
+<entry
+   committed-rev="719"
+   name="v8_cctest_arm.vcproj"
+   text-time="2009-03-13T02:44:02.000000Z"
+   committed-date="2008-11-07T17:21:11.905907Z"
+   checksum="f99681976ac718b5d3d59bf2f6748da9"
+   last-author="feng@chromium.org"
+   kind="file"
+   prop-time="2009-03-13T02:44:02.000000Z"/>
+<entry
+   committed-rev="16"
+   name="common.vsprops"
+   text-time="2009-03-13T02:44:02.000000Z"
+   committed-date="2008-08-22T13:33:59.614377Z"
+   checksum="1193b0c5a70a1d4bcba92f97209b850e"
+   last-author="christian.plesner.hansen"
+   kind="file"
+   prop-time="2009-03-13T02:44:02.000000Z"/>
+<entry
+   committed-rev="538"
+   name="js2c.cmd"
+   text-time="2009-03-13T02:44:02.000000Z"
+   committed-date="2008-10-21T15:24:58.619347Z"
+   checksum="2cd36b9035c5db0b6756c90be2cbb196"
+   last-author="sgjesse@chromium.org"
+   kind="file"
+   prop-time="2009-03-13T02:44:02.000000Z"/>
+<entry
+   committed-rev="1365"
+   name="v8_cctest.vcproj"
+   text-time="2009-03-13T02:44:02.000000Z"
+   committed-date="2009-02-25T16:00:21.690576Z"
+   checksum="72b6ed02286f844ad1c960edec459832"
+   last-author="mikhail.naganov@gmail.com"
+   kind="file"
+   prop-time="2009-03-13T02:44:02.000000Z"/>
+<entry
+   committed-rev="1349"
+   name="v8_mksnapshot.vcproj"
+   text-time="2009-03-13T02:44:02.000000Z"
+   committed-date="2009-02-24T13:32:01.598259Z"
+   checksum="d91d9227bb6efe940e0cbac4b5db75c9"
+   last-author="sgjesse@chromium.org"
+   kind="file"
+   prop-time="2009-03-13T02:44:02.000000Z"/>
+<entry
+   committed-rev="1355"
+   name="README.txt"
+   text-time="2009-03-13T02:44:02.000000Z"
+   committed-date="2009-02-25T08:08:01.588464Z"
+   checksum="6d294e5e5e93760192120ae42e855011"
+   last-author="erik.corry@gmail.com"
+   kind="file"
+   prop-time="2009-03-13T02:44:02.000000Z"/>
+<entry
+   committed-rev="1349"
+   name="d8.vcproj"
+   text-time="2009-03-13T02:44:02.000000Z"
+   committed-date="2009-02-24T13:32:01.598259Z"
+   checksum="77c6ca284c46455aa43baba9036d9d66"
+   last-author="sgjesse@chromium.org"
+   kind="file"
+   prop-time="2009-03-13T02:44:02.000000Z"/>
+<entry
+   committed-rev="1176"
+   name="v8_snapshot.vcproj"
+   text-time="2009-03-13T02:44:02.000000Z"
+   committed-date="2009-01-27T16:20:10.055869Z"
+   checksum="733cd710ff9c9d84b119693c672443b8"
+   last-author="maruel@chromium.org"
+   kind="file"
+   prop-time="2009-03-13T02:44:02.000000Z"/>
+</wc-entries>

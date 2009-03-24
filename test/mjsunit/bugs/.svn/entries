@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="utf-8"?>
+<wc-entries
+   xmlns="svn:">
+<entry
+   committed-rev="1581"
+   name=""
+   committed-date="2009-03-23T23:49:58.890432Z"
+   url="http://v8.googlecode.com/svn/branches/bleeding_edge/test/mjsunit/bugs"
+   last-author="christian.plesner.hansen"
+   kind="dir"
+   uuid="ce2b1a6d-e550-0410-aec6-3dcde31c8c00"
+   repos="http://v8.googlecode.com/svn"
+   revision="1582"/>
+<entry
+   committed-rev="242"
+   name="bug-941049.js"
+   text-time="2009-03-13T02:43:46.000000Z"
+   committed-date="2008-09-09T20:08:45.887895Z"
+   checksum="cf9138c58ac519db1817f443c2a0164d"
+   last-author="christian.plesner.hansen@gmail.com"
+   kind="file"
+   prop-time="2009-03-13T02:43:46.000000Z"/>
+<entry
+   committed-rev="1581"
+   name="bug-284.js"
+   text-time="2009-03-24T01:54:56.000000Z"
+   committed-date="2009-03-23T23:49:58.890432Z"
+   checksum="c12ce7beae0dd2d6cc84414db13115a1"
+   last-author="christian.plesner.hansen"
+   kind="file"
+   prop-time="2009-03-24T01:54:56.000000Z"/>
+<entry
+   committed-rev="1484"
+   name="bug-269.js"
+   text-time="2009-03-13T02:43:46.000000Z"
+   committed-date="2009-03-11T07:34:48.384648Z"
+   checksum="a7cbe0a957a36247e4f23ceab844b167"
+   last-author="sgjesse@chromium.org"
+   kind="file"
+   prop-time="2009-03-13T02:43:46.000000Z"/>
+<entry
+   committed-rev="242"
+   name="bug-900066.js"
+   text-time="2009-03-13T02:43:46.000000Z"
+   committed-date="2008-09-09T20:08:45.887895Z"
+   checksum="a8cbb132929bb69c79c67f2039f91d73"
+   last-author="christian.plesner.hansen@gmail.com"
+   kind="file"
+   prop-time="2009-03-13T02:43:46.000000Z"/>
+<entry
+   committed-rev="1548"
+   name="bug-1344252.js"
+   text-time="2009-03-21T03:04:10.000000Z"
+   committed-date="2009-03-19T15:06:00.224316Z"
+   checksum="5d799681dd041cb2718c8e900bc1e243"
+   last-author="ager@chromium.org"
+   kind="file"
+   prop-time="2009-03-21T03:04:10.000000Z"/>
+<entry
+   committed-rev="1238"
+   name="bug-222.js"
+   text-time="2009-03-13T02:43:46.000000Z"
+   committed-date="2009-02-09T08:46:26.416192Z"
+   checksum="3330db48120b0ec3f40a718ffec6c48d"
+   last-author="christian.plesner.hansen@gmail.com"
+   kind="file"
+   prop-time="2009-03-13T02:43:46.000000Z"/>
+<entry
+   committed-rev="1238"
+   name="bug-223.js"
+   text-time="2009-03-13T02:43:46.000000Z"
+   committed-date="2009-02-09T08:46:26.416192Z"
+   checksum="e074d42ad28ce136a82afa1a1ed7b37e"
+   last-author="christian.plesner.hansen@gmail.com"
+   kind="file"
+   prop-time="2009-03-13T02:43:46.000000Z"/>
+</wc-entries>

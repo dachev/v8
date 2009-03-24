@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="utf-8"?>
+<wc-entries
+   xmlns="svn:">
+<entry
+   committed-rev="1104"
+   name=""
+   committed-date="2009-01-19T18:56:47.768374Z"
+   url="http://v8.googlecode.com/svn/branches/bleeding_edge/test/mozilla"
+   last-author="erik.corry@gmail.com"
+   kind="dir"
+   uuid="ce2b1a6d-e550-0410-aec6-3dcde31c8c00"
+   repos="http://v8.googlecode.com/svn"
+   revision="1582"/>
+<entry
+   committed-rev="905"
+   name="mozilla-shell-emulation.js"
+   text-time="2009-03-13T02:43:24.000000Z"
+   committed-date="2008-12-03T10:21:50.633394Z"
+   checksum="67cb16f062578f05f95a80a76e7e9e2a"
+   last-author="lrn@chromium.org"
+   kind="file"
+   prop-time="2009-03-13T02:43:24.000000Z"/>
+<entry
+   committed-rev="905"
+   name="testcfg.py"
+   text-time="2009-03-13T02:43:24.000000Z"
+   committed-date="2008-12-03T10:21:50.633394Z"
+   checksum="6221d29917737c7b27b40ada475508ae"
+   last-author="lrn@chromium.org"
+   kind="file"
+   prop-time="2009-03-13T02:43:24.000000Z"/>
+<entry
+   committed-rev="1104"
+   name="mozilla.status"
+   text-time="2009-03-13T02:43:24.000000Z"
+   committed-date="2009-01-19T18:56:47.768374Z"
+   checksum="b947bd2bed8ed383326cad0f8bd0f6cd"
+   last-author="erik.corry@gmail.com"
+   kind="file"
+   prop-time="2009-03-13T02:43:24.000000Z"/>
+</wc-entries>
