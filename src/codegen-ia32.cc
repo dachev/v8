@@ -30,10 +30,10 @@
 #include "bootstrapper.h"
 #include "codegen-inl.h"
 #include "debug.h"
+#include "parser.h"
 #include "register-allocator-inl.h"
 #include "runtime.h"
 #include "scopes.h"
-#include "parser.h"
 
 namespace v8 { namespace internal {
 
@@ -2261,11 +2261,10 @@ void CodeGenerator::VisitLoopStatement(LoopStatement* node) {
     }
 
     case LoopStatement::WHILE_LOOP: {
-      // Do not duplicate conditions with function literal
+      // Do not duplicate conditions that may have function literal
       // subexpressions.  This can cause us to compile the function
       // literal twice.
-      bool test_at_bottom =
-          !scope_->is_global_scope() && !node->has_function_literal();
+      bool test_at_bottom = !node->may_have_function_literal();
 
       IncrementLoopNesting();
 
@@ -2360,11 +2359,10 @@ void CodeGenerator::VisitLoopStatement(LoopStatement* node) {
     }
 
     case LoopStatement::FOR_LOOP: {
-      // Do not duplicate conditions with function literal
+      // Do not duplicate conditions that may have function literal
       // subexpressions.  This can cause us to compile the function
       // literal twice.
-      bool test_at_bottom =
-          !scope_->is_global_scope() && !node->has_function_literal();
+      bool test_at_bottom = !node->may_have_function_literal();
 
       // Compile the init expression if present.
       if (node->init() != NULL) {
@@ -2683,14 +2681,17 @@ void CodeGenerator::VisitForInStatement(ForInStatement* node) {
   CheckStack();  // TODO(1222600): ignore if body contains calls.
   VisitAndSpill(node->body());
 
-  // Next.
+  // Next.  Reestablish a spilled frame in case we are coming here via
+  // a continue in the body.
   node->continue_target()->Bind();
+  frame_->SpillAll();
   frame_->EmitPop(eax);
   __ add(Operand(eax), Immediate(Smi::FromInt(1)));
   frame_->EmitPush(eax);
   entry.Jump();
 
-  // Cleanup.
+  // Cleanup.  No need to spill because VirtualFrame::Drop is safe for
+  // any frame.
   node->break_target()->Bind();
   frame_->Drop(5);
 

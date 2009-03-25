@@ -25,7 +25,8 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-// Platform specific code for MacOS goes here
+// Platform specific code for MacOS goes here. For the POSIX comaptible parts
+// the implementation is in platform-posix.cc.
 
 #include <ucontext.h>
 #include <unistd.h>
@@ -45,14 +46,10 @@
 #include <mach/task.h>
 #include <sys/time.h>
 #include <sys/resource.h>
-#include <sys/socket.h>
 #include <sys/types.h>
 #include <stdarg.h>
 #include <stdlib.h>
 
-#include <arpa/inet.h>
-#include <netinet/in.h>
-#include <netdb.h>
 #include <errno.h>
 
 #undef MAP_TYPE
@@ -231,9 +228,9 @@ size_t OS::AllocateAlignment() {
 
 void* OS::Allocate(const size_t requested,
                    size_t* allocated,
-                   bool executable) {
+                   bool is_executable) {
   const size_t msize = RoundUp(requested, getpagesize());
-  int prot = PROT_READ | PROT_WRITE | (executable ? PROT_EXEC : 0);
+  int prot = PROT_READ | PROT_WRITE | (is_executable ? PROT_EXEC : 0);
   void* mbase = mmap(NULL, msize, prot, MAP_PRIVATE | MAP_ANON, -1, 0);
   if (mbase == MAP_FAILED) {
     LOG(StringEvent("OS::Allocate", "mmap failed"));
@@ -245,10 +242,24 @@ void* OS::Allocate(const size_t requested,
 }
 
 
-void OS::Free(void* buf, const size_t length) {
+void OS::Free(void* address, const size_t size) {
   // TODO(1240712): munmap has a return value which is ignored here.
-  munmap(buf, length);
+  munmap(address, size);
 }
+
+
+#ifdef ENABLE_HEAP_PROTECTION
+
+void OS::Protect(void* address, size_t size) {
+  UNIMPLEMENTED();
+}
+
+
+void OS::Unprotect(void* address, size_t size, bool is_executable) {
+  UNIMPLEMENTED();
+}
+
+#endif
 
 
 void OS::Sleep(int milliseconds) {
@@ -373,8 +384,8 @@ bool VirtualMemory::IsReserved() {
 }
 
 
-bool VirtualMemory::Commit(void* address, size_t size, bool executable) {
-  int prot = PROT_READ | PROT_WRITE | (executable ? PROT_EXEC : 0);
+bool VirtualMemory::Commit(void* address, size_t size, bool is_executable) {
+  int prot = PROT_READ | PROT_WRITE | (is_executable ? PROT_EXEC : 0);
   if (MAP_FAILED == mmap(address, size, prot,
                          MAP_PRIVATE | MAP_ANON | MAP_FIXED,
                          kMmapFd, kMmapFdOffset)) {
@@ -391,6 +402,7 @@ bool VirtualMemory::Uncommit(void* address, size_t size) {
               MAP_PRIVATE | MAP_ANON | MAP_NORESERVE,
               kMmapFd, kMmapFdOffset) != MAP_FAILED;
 }
+
 
 class ThreadHandle::PlatformData : public Malloced {
  public:
@@ -562,181 +574,6 @@ bool MacOSSemaphore::Wait(int timeout) {
 
 Semaphore* OS::CreateSemaphore(int count) {
   return new MacOSSemaphore(count);
-}
-
-
-// ----------------------------------------------------------------------------
-// MacOS socket support.
-//
-
-class MacOSSocket : public Socket {
- public:
-  explicit MacOSSocket() {
-    // Create the socket.
-    socket_ = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-  }
-  explicit MacOSSocket(int socket): socket_(socket) { }
-  virtual ~MacOSSocket() { Shutdown(); }
-
-  // Server initialization.
-  bool Bind(const int port);
-  bool Listen(int backlog) const;
-  Socket* Accept() const;
-
-  // Client initialization.
-  bool Connect(const char* host, const char* port);
-
-  // Shutdown socket for both read and write.
-  bool Shutdown();
-
-  // Data Transimission
-  int Send(const char* data, int len) const;
-  int Receive(char* data, int len) const;
-
-  bool SetReuseAddress(bool reuse_address);
-
-  bool IsValid() const { return socket_ != -1; }
-
- private:
-  int socket_;
-};
-
-
-bool MacOSSocket::Bind(const int port) {
-  if (!IsValid())  {
-    return false;
-  }
-
-  int on = 1;
-  int status = setsockopt(socket_, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
-  if (status != 0) {
-    return false;
-  }
-
-  sockaddr_in addr;
-  memset(&addr, 0, sizeof(addr));
-  addr.sin_family = AF_INET;
-  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-  addr.sin_port = htons(port);
-  status = bind(socket_,
-                reinterpret_cast<struct sockaddr *>(&addr),
-                sizeof(addr));
-  return status == 0;
-}
-
-
-bool MacOSSocket::Listen(int backlog) const {
-  if (!IsValid()) {
-    return false;
-  }
-
-  int status = listen(socket_, backlog);
-  return status == 0;
-}
-
-
-Socket* MacOSSocket::Accept() const {
-  if (!IsValid()) {
-    return NULL;
-  }
-
-  int socket = accept(socket_, NULL, NULL);
-  if (socket == -1) {
-    return NULL;
-  } else {
-    return new MacOSSocket(socket);
-  }
-}
-
-
-bool MacOSSocket::Connect(const char* host, const char* port) {
-  if (!IsValid()) {
-    return false;
-  }
-
-  // Lookup host and port.
-  struct addrinfo *result = NULL;
-  struct addrinfo hints;
-  memset(&hints, 0, sizeof(addrinfo));
-  hints.ai_family = AF_INET;
-  hints.ai_socktype = SOCK_STREAM;
-  hints.ai_protocol = IPPROTO_TCP;
-  int status = getaddrinfo(host, port, &hints, &result);
-  if (status != 0) {
-    return false;
-  }
-
-  // Connect.
-  status = connect(socket_, result->ai_addr, result->ai_addrlen);
-  freeaddrinfo(result);
-  return status == 0;
-}
-
-
-bool MacOSSocket::Shutdown() {
-  if (IsValid()) {
-    // Shutdown socket for both read and write.
-    int status = shutdown(socket_, SHUT_RDWR);
-    close(socket_);
-    socket_ = -1;
-    return status == 0;
-  }
-  return true;
-}
-
-
-int MacOSSocket::Send(const char* data, int len) const {
-  int status = send(socket_, data, len, 0);
-  return status;
-}
-
-
-int MacOSSocket::Receive(char* data, int len) const {
-  int status = recv(socket_, data, len, 0);
-  return status;
-}
-
-
-bool MacOSSocket::SetReuseAddress(bool reuse_address) {
-  int on = reuse_address ? 1 : 0;
-  int status = setsockopt(socket_, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
-  return status == 0;
-}
-
-
-bool Socket::Setup() {
-  // Nothing to do on MacOS.
-  return true;
-}
-
-
-int Socket::LastError() {
-  return errno;
-}
-
-
-uint16_t Socket::HToN(uint16_t value) {
-  return htons(value);
-}
-
-
-uint16_t Socket::NToH(uint16_t value) {
-  return ntohs(value);
-}
-
-
-uint32_t Socket::HToN(uint32_t value) {
-  return htonl(value);
-}
-
-
-uint32_t Socket::NToH(uint32_t value) {
-  return ntohl(value);
-}
-
-
-Socket* OS::CreateSocket() {
-  return new MacOSSocket();
 }
 
 
