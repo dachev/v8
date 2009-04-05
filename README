@@ -1,0 +1,4 @@
+This is a patched V8 version to support __noSuchMethod__. All unit tests pass.
+
+BUILD:
+Use scons... Example: scons mode=release library=shared sample=shell
