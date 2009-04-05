@@ -1,4 +1,4 @@
-// Copyright 2006-2008 the V8 project authors. All rights reserved.
+// Copyright 2009 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -308,6 +308,11 @@ Handle<JSObject> Copy(Handle<JSObject> obj) {
 // associated with the wrapper and get rid of both the wrapper and the
 // handle.
 static void ClearWrapperCache(Persistent<v8::Value> handle, void*) {
+#ifdef ENABLE_HEAP_PROTECTION
+  // Weak reference callbacks are called as if from outside V8.  We
+  // need to reeenter to unprotect the heap.
+  VMState state(OTHER);
+#endif
   Handle<Object> cache = Utils::OpenHandle(*handle);
   JSValue* wrapper = JSValue::cast(*cache);
   Proxy* proxy = Script::cast(wrapper->value())->wrapper();
@@ -430,7 +435,7 @@ v8::Handle<v8::Array> GetKeysForNamedInterceptor(Handle<JSObject> receiver,
     LOG(ApiObjectAccess("interceptor-named-enum", *object));
     {
       // Leaving JavaScript.
-      VMState state(OTHER);
+      VMState state(EXTERNAL);
       result = enum_fun(info);
     }
   }
@@ -454,7 +459,7 @@ v8::Handle<v8::Array> GetKeysForIndexedInterceptor(Handle<JSObject> receiver,
     LOG(ApiObjectAccess("interceptor-indexed-enum", *object));
     {
       // Leaving JavaScript.
-      VMState state(OTHER);
+      VMState state(EXTERNAL);
       result = enum_fun(info);
     }
   }

@@ -371,11 +371,10 @@ class CodeGenerator: public AstVisitor {
   // Main code generation function
   void GenCode(FunctionLiteral* fun);
 
-  // Generate the return sequence code.  Should be called no more than once
-  // per compiled function (it binds the return target, which can not be
-  // done more than once).  The return value is assumed to be in eax by the
-  // code generated.
-  void GenerateReturnSequence();
+  // Generate the return sequence code.  Should be called no more than
+  // once per compiled function, immediately after binding the return
+  // target (which can not be done more than once).
+  void GenerateReturnSequence(Result* return_value);
 
   // The following are used by class Reference.
   void LoadReference(Reference* ref);
@@ -432,9 +431,32 @@ class CodeGenerator: public AstVisitor {
   // control destination.
   void ToBoolean(ControlDestination* destination);
 
-  void GenericBinaryOperation(Token::Value op,
-      StaticType* type,
+  void GenericBinaryOperation(
+      Token::Value op,
+      SmiAnalysis* type,
       const OverwriteMode overwrite_mode = NO_OVERWRITE);
+
+  // If possible, combine two constant smi values using op to produce
+  // a smi result, and push it on the virtual frame, all at compile time.
+  // Returns true if it succeeds.  Otherwise it has no effect.
+  bool FoldConstantSmis(Token::Value op, int left, int right);
+
+  // Emit code to perform a binary operation on a constant
+  // smi and a likely smi.  Consumes the Result *operand.
+  void ConstantSmiBinaryOperation(Token::Value op,
+                                  Result* operand,
+                                  Handle<Object> constant_operand,
+                                  SmiAnalysis* type,
+                                  bool reversed,
+                                  OverwriteMode overwrite_mode);
+
+  // Emit code to perform a binary operation on two likely smis.
+  // The code to handle smi arguments is produced inline.
+  // Consumes the Results *left and *right.
+  void LikelySmiBinaryOperation(Token::Value op,
+                                Result* left,
+                                Result* right,
+                                OverwriteMode overwrite_mode);
 
   void Comparison(Condition cc,
                   bool strict,
@@ -448,13 +470,6 @@ class CodeGenerator: public AstVisitor {
   // Load an integer constant x into a register target using
   // at most 16 bits of user-controlled data per assembly operation.
   void LoadUnsafeSmi(Register target, Handle<Object> value);
-
-  bool IsInlineSmi(Literal* literal);
-  void SmiOperation(Token::Value op,
-                    StaticType* type,
-                    Handle<Object> value,
-                    bool reversed,
-                    OverwriteMode overwrite_mode);
 
   void CallWithArguments(ZoneList<Expression*>* arguments, int position);
 
@@ -552,6 +567,7 @@ class CodeGenerator: public AstVisitor {
   // positions are collected by the assembler and emitted with the relocation
   // information.
   void CodeForFunctionPosition(FunctionLiteral* fun);
+  void CodeForReturnPosition(FunctionLiteral* fun);
   void CodeForStatementPosition(Node* node);
   void CodeForSourcePosition(int pos);
 
@@ -562,7 +578,6 @@ class CodeGenerator: public AstVisitor {
 #endif
 
   bool is_eval_;  // Tells whether code is generated for eval.
-
   Handle<Script> script_;
   List<DeferredCode*> deferred_;
 

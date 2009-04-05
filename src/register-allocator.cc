@@ -36,8 +36,19 @@ namespace v8 { namespace internal {
 // Result implementation.
 
 Result::Result(Register reg, CodeGenerator* cgen)
-  : type_(REGISTER),
-    cgen_(cgen) {
+    : static_type_(),
+      type_(REGISTER),
+      cgen_(cgen) {
+  data_.reg_ = reg;
+  ASSERT(reg.is_valid());
+  cgen_->allocator()->Use(reg);
+}
+
+
+Result::Result(Register reg, CodeGenerator* cgen, StaticType static_type)
+    : static_type_(static_type),
+      type_(REGISTER),
+      cgen_(cgen) {
   data_.reg_ = reg;
   ASSERT(reg.is_valid());
   cgen_->allocator()->Use(reg);
@@ -45,6 +56,7 @@ Result::Result(Register reg, CodeGenerator* cgen)
 
 
 void Result::CopyTo(Result* destination) const {
+  destination->static_type_ = static_type_;
   destination->type_ = type();
   destination->cgen_ = cgen_;
 
@@ -107,7 +119,7 @@ Result RegisterAllocator::Allocate(Register target) {
   // If the target is only referenced in the frame, it can be spilled and
   // then allocated.
   ASSERT(cgen_->has_valid_frame());
-  if (count(target) == cgen_->frame()->register_count(target)) {
+  if (cgen_->frame()->is_used(target) && count(target) == 1)  {
     cgen_->frame()->Spill(target);
     ASSERT(!is_used(target));
     return Result(target, cgen_);

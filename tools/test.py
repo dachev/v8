@@ -1174,8 +1174,9 @@ def GetSpecialCommandProcessor(value):
     return ExpandCommand
   else:
     pos = value.find('@')
-    prefix = value[:pos].split()
-    suffix = value[pos+1:].split()
+    import urllib
+    prefix = urllib.unquote(value[:pos]).split()
+    suffix = urllib.unquote(value[pos+1:]).split()
     def ExpandCommand(args):
       return prefix + args + suffix
     return ExpandCommand
@@ -1260,7 +1261,8 @@ def Main():
       env = {
         'mode': mode,
         'system': utils.GuessOS(),
-        'arch': options.arch
+        'arch': options.arch,
+        'simulator': options.simulator
       }
       test_list = root.ListTests([], path, context, mode)
       unclassified_tests += test_list

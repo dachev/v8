@@ -83,7 +83,7 @@ class LogMessageBuilder;
 #endif
 
 
-class VMState {
+class VMState BASE_EMBEDDED {
 #ifdef ENABLE_LOGGING_AND_PROFILING
  public:
   explicit VMState(StateTag state);
@@ -167,6 +167,8 @@ class Logger {
   static void CodeCreateEvent(const char* tag, Code* code, String* name,
                               String* source, int line);
   static void CodeCreateEvent(const char* tag, Code* code, int args_count);
+  // Emits a code create event for a RegExp.
+  static void RegExpCodeCreateEvent(Code* code, String* source);
   static void CodeAllocateEvent(Code* code, Assembler* assem);
   // Emits a code move event.
   static void CodeMoveEvent(Address from, Address to);
@@ -227,7 +229,7 @@ class Logger {
   static void UncheckedStringEvent(const char* name, const char* value);
 
   // Size of buffer used for formatting log messages.
-  static const int kMessageBufferSize = 256;
+  static const int kMessageBufferSize = 2048;
 
   // Buffer used for formatting log messages. This is a singleton buffer and
   // mutex_ should be acquired before using it.
@@ -251,6 +253,9 @@ class Logger {
 
   // A stack of VM states.
   static VMState* current_state_;
+
+  // Singleton bottom or default vm state.
+  static VMState bottom_state_;
 
   // SlidingStateWindow instance keeping a sliding window of the most
   // recent VM states.

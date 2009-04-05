@@ -53,12 +53,11 @@ VirtualFrame::SpilledScope::~SpilledScope() {
 VirtualFrame::VirtualFrame(VirtualFrame* original)
     : cgen_(original->cgen_),
       masm_(original->masm_),
-      elements_(original->elements_.length()),
+      elements_(original->elements_.capacity()),
       parameter_count_(original->parameter_count_),
       local_count_(original->local_count_),
       stack_pointer_(original->stack_pointer_),
-      frame_pointer_(original->frame_pointer_),
-      frame_registers_(original->frame_registers_) {
+      frame_pointer_(original->frame_pointer_) {
   // Copy all the elements from the original.
   for (int i = 0; i < original->elements_.length(); i++) {
     elements_.Add(original->elements_[i]);
@@ -94,10 +93,10 @@ FrameElement VirtualFrame::CopyElementAt(int index) {
     case FrameElement::MEMORY:  // Fall through.
     case FrameElement::REGISTER:
       // All copies are backed by memory or register locations.
-      result.type_ =
-          FrameElement::TypeField::encode(FrameElement::COPY)
-          | FrameElement::IsCopiedField::encode(false)
-          | FrameElement::SyncField::encode(FrameElement::NOT_SYNCED);
+      result.set_static_type(target.static_type());
+      result.type_ = FrameElement::COPY;
+      result.copied_ = false;
+      result.synced_ = false;
       result.data_.index_ = index;
       elements_[index].set_copied();
       break;
@@ -152,7 +151,6 @@ void VirtualFrame::ForgetElements(int count) {
       if (cgen_->frame() == this) {
         Unuse(last.reg());
       } else {
-        frame_registers_.Unuse(last.reg());
         register_locations_[last.reg().code()] = kIllegalIndex;
       }
     }
@@ -161,56 +159,39 @@ void VirtualFrame::ForgetElements(int count) {
 
 
 void VirtualFrame::Use(Register reg, int index) {
-  ASSERT(frame_registers_.count(reg) == 0);
   ASSERT(register_locations_[reg.code()] == kIllegalIndex);
   register_locations_[reg.code()] = index;
-  frame_registers_.Use(reg);
   cgen_->allocator()->Use(reg);
 }
 
 
 void VirtualFrame::Unuse(Register reg) {
-  ASSERT(frame_registers_.count(reg) == 1);
   ASSERT(register_locations_[reg.code()] != kIllegalIndex);
   register_locations_[reg.code()] = kIllegalIndex;
-  frame_registers_.Unuse(reg);
   cgen_->allocator()->Unuse(reg);
 }
 
 
 void VirtualFrame::Spill(Register target) {
-  if (!frame_registers_.is_used(target)) return;
-  for (int i = 0; i < elements_.length(); i++) {
-    if (elements_[i].is_register() && elements_[i].reg().is(target)) {
-      SpillElementAt(i);
-    }
+  if (is_used(target)) {
+    SpillElementAt(register_index(target));
   }
 }
 
 
-// Spill any register if possible, making its external reference count zero.
+// If there are any registers referenced only by the frame, spill one.
 Register VirtualFrame::SpillAnyRegister() {
-  // Find the leftmost (ordered by register code), least
-  // internally-referenced register whose internal reference count matches
-  // its external reference count (so that spilling it from the frame frees
-  // it for use).
-  int min_count = kMaxInt;
-  int best_register_code = no_reg.code_;
-
+  // Find the leftmost (ordered by register code) register whose only
+  // reference is in the frame.
   for (int i = 0; i < kNumRegisters; i++) {
-    int count = frame_registers_.count(i);
-    if (count < min_count && count == cgen_->allocator()->count(i)) {
-      min_count = count;
-      best_register_code = i;
+    if (is_used(i) && cgen_->allocator()->count(i) == 1) {
+      Register result = { i };
+      Spill(result);
+      ASSERT(!cgen_->allocator()->is_used(result));
+      return result;
     }
   }
-
-  Register result = { best_register_code };
-  if (result.is_valid()) {
-    Spill(result);
-    ASSERT(!cgen_->allocator()->is_used(result));
-  }
-  return result;
+  return no_reg;
 }
 
 
@@ -227,26 +208,46 @@ void VirtualFrame::SpillElementAt(int index) {
   if (elements_[index].is_register()) {
     Unuse(elements_[index].reg());
   }
+  new_element.set_static_type(elements_[index].static_type());
   elements_[index] = new_element;
 }
 
 
-// Clear the dirty bits for the range of elements in [begin, end).
+// Clear the dirty bits for the range of elements in
+// [min(stack_pointer_ + 1,begin), end).
 void VirtualFrame::SyncRange(int begin, int end) {
   ASSERT(begin >= 0);
   ASSERT(end <= elements_.length());
-  for (int i = begin; i < end; i++) {
-    RawSyncElementAt(i);
+  if (begin > stack_pointer_) {
+    // Elements between stack_pointer_ + 1 and begin must also be synced.
+    for (int i = stack_pointer_ + 1; i < end; i++) {
+      SyncElementByPushing(i);
+    }
+  } else if (end <= stack_pointer_ + 1) {
+    for (int i = begin; i < end; i++) {
+      if (!elements_[i].is_synced()) {
+          SyncElementBelowStackPointer(i);
+      }
+    }
+  } else {
+    // Split into two ranges that each satisfy a condition above.
+    SyncRange(begin, stack_pointer_ + 1);
+    SyncRange(stack_pointer_ + 1, end);
   }
 }
 
 
 // Clear the dirty bit for the element at a given index.
 void VirtualFrame::SyncElementAt(int index) {
-  if (index > stack_pointer_ + 1) {
-    SyncRange(stack_pointer_ + 1, index);
+  if (index <= stack_pointer_) {
+    if (!elements_[index].is_synced()) {
+      SyncElementBelowStackPointer(index);
+    }
+  } else {
+    for (int i = stack_pointer_ + 1; i <= index; i++) {
+      SyncElementByPushing(i);
+    }
   }
-  RawSyncElementAt(index);
 }
 
 
@@ -279,7 +280,6 @@ void VirtualFrame::PrepareMergeTo(VirtualFrame* expected) {
         if (cgen_->frame() == this) {
           Unuse(source.reg());
         } else {
-          frame_registers_.Unuse(source.reg());
           register_locations_[source.reg().code()] = kIllegalIndex;
         }
       }
@@ -306,24 +306,18 @@ void VirtualFrame::PrepareForCall(int spilled_args, int dropped_args) {
   ASSERT(height() >= spilled_args);
   ASSERT(dropped_args <= spilled_args);
 
-  int arg_base_index = elements_.length() - spilled_args;
-  // Spill the arguments.  We spill from the top down so that the
-  // backing stores of register copies will be spilled only after all
-  // the copies are spilled---it is better to spill via a
-  // register-to-memory move than a memory-to-memory move.
-  for (int i = elements_.length() - 1; i >= arg_base_index; i--) {
-    SpillElementAt(i);
+  SyncRange(0, elements_.length());
+  // Spill registers.
+  for (int i = 0; i < kNumRegisters; i++) {
+    if (is_used(i)) {
+      SpillElementAt(register_locations_[i]);
+    }
   }
 
-  // Below the arguments, spill registers and sync everything else.
-  // Syncing is necessary for the locals and parameters to give the
-  // debugger a consistent view of the frame.
-  for (int i = arg_base_index - 1; i >= 0; i--) {
-    FrameElement element = elements_[i];
-    if (element.is_register()) {
+  // Spill the arguments.
+  for (int i = elements_.length() - spilled_args; i < elements_.length(); i++) {
+    if (!elements_[i].is_memory()) {
       SpillElementAt(i);
-    } else if (element.is_valid()) {
-      SyncElementAt(i);
     }
   }
 
@@ -390,24 +384,15 @@ void VirtualFrame::SetElementAt(int index, Result* value) {
 
   FrameElement new_element;
   if (value->is_register()) {
-    // There are two cases depending no whether the register already
-    // occurs in the frame or not.
-    if (register_count(value->reg()) == 0) {
-      Use(value->reg(), frame_index);
-      elements_[frame_index] =
-          FrameElement::RegisterElement(value->reg(),
-                                        FrameElement::NOT_SYNCED);
-    } else {
-      int i = 0;
-      for (; i < elements_.length(); i++) {
-        if (elements_[i].is_register() && elements_[i].reg().is(value->reg())) {
-          break;
-        }
-      }
-      ASSERT(i < elements_.length());
+    if (is_used(value->reg())) {
+      // The register already appears on the frame.  Either the existing
+      // register element, or the new element at frame_index, must be made
+      // a copy.
+      int i = register_index(value->reg());
+      ASSERT(value->static_type() == elements_[i].static_type());
 
       if (i < frame_index) {
-        // The register backing store is lower in the frame than its copy.
+        // The register FrameElement is lower in the frame than the new copy.
         elements_[frame_index] = CopyElementAt(i);
       } else {
         // There was an early bailout for the case of setting a
@@ -426,6 +411,13 @@ void VirtualFrame::SetElementAt(int index, Result* value) {
           }
         }
       }
+    } else {
+      // The register value->reg() was not already used on the frame.
+      Use(value->reg(), frame_index);
+      elements_[frame_index] =
+          FrameElement::RegisterElement(value->reg(),
+                                        FrameElement::NOT_SYNCED,
+                                        value->static_type());
     }
   } else {
     ASSERT(value->is_constant());
@@ -443,87 +435,39 @@ void VirtualFrame::PushFrameSlotAt(int index) {
 }
 
 
-Result VirtualFrame::CallStub(CodeStub* stub, int frame_arg_count) {
-  PrepareForCall(frame_arg_count, frame_arg_count);
-  return RawCallStub(stub, frame_arg_count);
+Result VirtualFrame::CallStub(CodeStub* stub, int arg_count) {
+  PrepareForCall(arg_count, arg_count);
+  return RawCallStub(stub);
 }
 
 
-Result VirtualFrame::CallStub(CodeStub* stub,
-                              Result* arg,
-                              int frame_arg_count) {
-  PrepareForCall(frame_arg_count, frame_arg_count);
-  arg->Unuse();
-  return RawCallStub(stub, frame_arg_count);
-}
-
-
-Result VirtualFrame::CallStub(CodeStub* stub,
-                              Result* arg0,
-                              Result* arg1,
-                              int frame_arg_count) {
-  PrepareForCall(frame_arg_count, frame_arg_count);
-  arg0->Unuse();
-  arg1->Unuse();
-  return RawCallStub(stub, frame_arg_count);
-}
-
-
-Result VirtualFrame::CallCodeObject(Handle<Code> code,
-                                    RelocInfo::Mode rmode,
-                                    int dropped_args) {
-  int spilled_args = 0;
-  switch (code->kind()) {
-    case Code::CALL_IC:
-      spilled_args = dropped_args + 1;
-      break;
-    case Code::FUNCTION:
-      spilled_args = dropped_args + 1;
-      break;
-    case Code::KEYED_LOAD_IC:
-      ASSERT(dropped_args == 0);
-      spilled_args = 2;
-      break;
-    default:
-      // The other types of code objects are called with values
-      // in specific registers, and are handled in functions with
-      // a different signature.
-      UNREACHABLE();
-      break;
-  }
-  PrepareForCall(spilled_args, dropped_args);
-  return RawCallCodeObject(code, rmode);
-}
-
-
-void VirtualFrame::Push(Register reg) {
-  FrameElement new_element;
-  if (register_count(reg) == 0) {
-    Use(reg, elements_.length());
-    new_element =
-        FrameElement::RegisterElement(reg, FrameElement::NOT_SYNCED);
+void VirtualFrame::Push(Register reg, StaticType static_type) {
+  if (is_used(reg)) {
+    int index = register_index(reg);
+    FrameElement element = CopyElementAt(index);
+    ASSERT(static_type.merge(element.static_type()) == element.static_type());
+    elements_.Add(element);
   } else {
-    for (int i = 0; i < elements_.length(); i++) {
-      FrameElement element = elements_[i];
-      if (element.is_register() && element.reg().is(reg)) {
-        new_element = CopyElementAt(i);
-        break;
-      }
-    }
+    Use(reg, elements_.length());
+    FrameElement element =
+        FrameElement::RegisterElement(reg,
+                                      FrameElement::NOT_SYNCED,
+                                      static_type);
+    elements_.Add(element);
   }
-  elements_.Add(new_element);
 }
 
 
 void VirtualFrame::Push(Handle<Object> value) {
-  elements_.Add(FrameElement::ConstantElement(value,
-                                              FrameElement::NOT_SYNCED));
+  FrameElement element =
+      FrameElement::ConstantElement(value, FrameElement::NOT_SYNCED);
+  elements_.Add(element);
 }
 
 
 void VirtualFrame::Push(Result* result) {
   if (result->is_register()) {
-    Push(result->reg());
+    Push(result->reg(), result->static_type());
   } else {
     ASSERT(result->is_constant());
     Push(result->handle());
@@ -544,7 +488,9 @@ void VirtualFrame::Nip(int num_dropped) {
 
 
 bool FrameElement::Equals(FrameElement other) {
-  if (type_ != other.type_) return false;
+  if (type_ != other.type_ ||
+      copied_ != other.copied_ ||
+      synced_ != other.synced_) return false;
 
   if (is_register()) {
     if (!reg().is(other.reg())) return false;
@@ -569,9 +515,6 @@ bool VirtualFrame::Equals(VirtualFrame* other) {
   if (frame_pointer_ != other->frame_pointer_) return false;
 
   for (int i = 0; i < kNumRegisters; i++) {
-    if (frame_registers_.count(i) != other->frame_registers_.count(i)) {
-      return false;
-    }
     if (register_locations_[i] != other->register_locations_[i]) {
       return false;
     }

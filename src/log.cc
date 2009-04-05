@@ -1,4 +1,4 @@
-// Copyright 2006-2008 the V8 project authors. All rights reserved.
+// Copyright 2009 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -299,6 +299,7 @@ class LogMessageBuilder BASE_EMBEDDED {
   void AppendDetailed(String* str, bool show_impl_info);
 
   void WriteToLogFile();
+  void WriteCStringToLogFile(const char* str);
 
  private:
   ScopedLock sl;
@@ -395,6 +396,14 @@ void LogMessageBuilder::WriteToLogFile() {
   ASSERT(rv == static_cast<size_t>(pos_));
   USE(rv);
 }
+
+// Write a null-terminated string to to the log file currently opened.
+void LogMessageBuilder::WriteCStringToLogFile(const char* str) {
+  size_t len = strlen(str);
+  size_t rv = fwrite(str, 1, len, Logger::logfile_);
+  ASSERT(rv == len);
+  USE(rv);
+}
 #endif
 
 
@@ -407,6 +416,7 @@ FILE* Logger::logfile_ = NULL;
 Profiler* Logger::profiler_ = NULL;
 Mutex* Logger::mutex_ = NULL;
 VMState* Logger::current_state_ = NULL;
+VMState Logger::bottom_state_(EXTERNAL);
 SlidingStateWindow* Logger::sliding_state_window_ = NULL;
 
 #endif  // ENABLE_LOGGING_AND_PROFILING
@@ -416,8 +426,7 @@ void Logger::Preamble(const char* content) {
 #ifdef ENABLE_LOGGING_AND_PROFILING
   if (logfile_ == NULL || !FLAG_log_code) return;
   LogMessageBuilder msg;
-  msg.Append("%s", content);
-  msg.WriteToLogFile();
+  msg.WriteCStringToLogFile(content);
 #endif
 }
 
@@ -757,6 +766,20 @@ void Logger::CodeCreateEvent(const char* tag, Code* code, int args_count) {
 }
 
 
+void Logger::RegExpCodeCreateEvent(Code* code, String* source) {
+#ifdef ENABLE_LOGGING_AND_PROFILING
+  if (logfile_ == NULL || !FLAG_log_code) return;
+  LogMessageBuilder msg;
+  msg.Append("code-creation,%s,0x%x,%d,\"", "RegExp",
+             reinterpret_cast<unsigned int>(code->address()),
+             code->ExecutableSize());
+  msg.AppendDetailed(source, false);
+  msg.Append("\"\n");
+  msg.WriteToLogFile();
+#endif
+}
+
+
 void Logger::CodeAllocateEvent(Code* code, Assembler* assem) {
 #ifdef ENABLE_LOGGING_AND_PROFILING
   if (logfile_ == NULL || !FLAG_log_code) return;
@@ -1009,15 +1032,15 @@ bool Logger::Setup() {
         }
       }
       SmartPointer<const char> expanded = stream.ToCString();
-      logfile_ = OS::FOpen(*expanded, "w");
+      logfile_ = OS::FOpen(*expanded, OS::LogFileOpenMode);
     } else {
-      logfile_ = OS::FOpen(FLAG_logfile, "w");
+      logfile_ = OS::FOpen(FLAG_logfile, OS::LogFileOpenMode);
     }
     message_buffer_ = NewArray<char>(kMessageBufferSize);
     mutex_ = OS::CreateMutex();
   }
 
-  current_state_ = new VMState(OTHER);
+  current_state_ = &bottom_state_;
 
   // as log is initialized early with V8, we can assume that JS execution
   // frames can never reach this point on stack
@@ -1052,8 +1075,6 @@ void Logger::TearDown() {
     profiler_ = NULL;
   }
 
-  // Deleting the current_state_ has the side effect of assigning to it(!).
-  while (current_state_) delete current_state_;
   delete sliding_state_window_;
 
   delete ticker_;
@@ -1111,6 +1132,13 @@ static const char* StateToString(StateTag state) {
 }
 
 VMState::VMState(StateTag state) {
+#if !defined(ENABLE_HEAP_PROTECTION)
+  // When not protecting the heap, there is no difference between
+  // EXTERNAL and OTHER.  As an optimizatin in that case, we will not
+  // perform EXTERNAL->OTHER transitions through the API.  We thus
+  // compress the two states into one.
+  if (state == EXTERNAL) state = OTHER;
+#endif
   state_ = state;
   previous_ = Logger::current_state_;
   Logger::current_state_ = this;
@@ -1126,11 +1154,11 @@ VMState::VMState(StateTag state) {
   if (FLAG_protect_heap && previous_ != NULL) {
     if (state_ == EXTERNAL) {
       // We are leaving V8.
-      ASSERT(previous_ == NULL || previous_->state_ != EXTERNAL);
+      ASSERT(previous_->state_ != EXTERNAL);
       Heap::Protect();
-    } else {
-      // Are we entering V8?
-      if (previous_->state_ == EXTERNAL) Heap::Unprotect();
+    } else if (previous_->state_ == EXTERNAL) {
+      // We are entering V8.
+      Heap::Unprotect();
     }
   }
 #endif
@@ -1150,11 +1178,12 @@ VMState::~VMState() {
 #ifdef ENABLE_HEAP_PROTECTION
   if (FLAG_protect_heap && previous_ != NULL) {
     if (state_ == EXTERNAL) {
-      // Are we (re)entering V8?
-      if (previous_->state_ != EXTERNAL) Heap::Unprotect();
-    } else {
-      // Are we leaving V8?
-      if (previous_->state_ == EXTERNAL) Heap::Protect();
+      // We are reentering V8.
+      ASSERT(previous_->state_ != EXTERNAL);
+      Heap::Unprotect();
+    } else if (previous_->state_ == EXTERNAL) {
+      // We are leaving V8.
+      Heap::Protect();
     }
   }
 #endif

@@ -1,4 +1,4 @@
-// Copyright 2008 the V8 project authors. All rights reserved.
+// Copyright 2009 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -76,8 +76,16 @@ class VirtualFrame : public Malloced {
     return elements_.length() - expression_base_index();
   }
 
-  int register_count(Register reg) {
-    return frame_registers_.count(reg);
+  int register_index(Register reg) {
+    return register_locations_[reg.code()];
+  }
+
+  bool is_used(int reg_code) {
+    return register_locations_[reg_code] != kIllegalIndex;
+  }
+
+  bool is_used(Register reg) {
+    return is_used(reg.code()) != kIllegalIndex;
   }
 
   // Add extra in-memory elements to the top of the frame to match an actual
@@ -240,30 +248,33 @@ class VirtualFrame : public Malloced {
   // Push a try-catch or try-finally handler on top of the virtual frame.
   void PushTryHandler(HandlerType type);
 
-  // Call a code stub, given the number of arguments it expects on (and
-  // removes from) the top of the physical frame.
-  Result CallStub(CodeStub* stub, int frame_arg_count);
-  Result CallStub(CodeStub* stub, Result* arg, int frame_arg_count);
-  Result CallStub(CodeStub* stub,
-                  Result* arg0,
-                  Result* arg1,
-                  int frame_arg_count);
+  // Call stub given the number of arguments it expects on (and
+  // removes from) the stack.
+  Result CallStub(CodeStub* stub, int arg_count);
 
-  // Call the runtime, given the number of arguments expected on (and
-  // removed from) the top of the physical frame.
-  Result CallRuntime(Runtime::Function* f, int frame_arg_count);
-  Result CallRuntime(Runtime::FunctionId id, int frame_arg_count);
+  // Call stub that expects its argument in r0.  The argument is given
+  // as a result which must be the register r0.
+  Result CallStub(CodeStub* stub, Result* arg);
 
-  // Invoke a builtin, given the number of arguments it expects on (and
-  // removes from) the top of the physical frame.
+  // Call stub that expects its arguments in r1 and r0.  The arguments
+  // are given as results which must be the appropriate registers.
+  Result CallStub(CodeStub* stub, Result* arg0, Result* arg1);
+
+  // Call runtime given the number of arguments expected on (and
+  // removed from) the stack.
+  Result CallRuntime(Runtime::Function* f, int arg_count);
+  Result CallRuntime(Runtime::FunctionId id, int arg_count);
+
+  // Invoke builtin given the number of arguments it expects on (and
+  // removes from) the stack.
   Result InvokeBuiltin(Builtins::JavaScript id,
                        InvokeJSFlags flag,
                        Result* arg_count_register,
-                       int frame_arg_count);
+                       int arg_count);
 
-  // Call into a JS code object, given the number of arguments it
-  // removes from the top of the physical frame.
-  // Register arguments are passed as results and consumed by the call.
+  // Call into an IC stub given the number of arguments it removes
+  // from the stack.  Register arguments are passed as results and
+  // consumed by the call.
   Result CallCodeObject(Handle<Code> ic,
                         RelocInfo::Mode rmode,
                         int dropped_args);
@@ -301,12 +312,11 @@ class VirtualFrame : public Malloced {
   void EmitPush(Register reg);
 
   // Push an element on the virtual frame.
-  void Push(Register reg);
+  void Push(Register reg, StaticType static_type = StaticType());
   void Push(Handle<Object> value);
   void Push(Smi* value) { Push(Handle<Object>(value)); }
 
-  // Pushing a result invalidates it (its contents become owned by the
-  // frame).
+  // Pushing a result invalidates it (its contents become owned by the frame).
   void Push(Result* result);
 
   // Nip removes zero or more elements from immediately below the top
@@ -320,6 +330,7 @@ class VirtualFrame : public Malloced {
   static const int kContextOffset = StandardFrameConstants::kContextOffset;
 
   static const int kHandlerSize = StackHandlerConstants::kSize / kPointerSize;
+  static const int kPreallocatedElements = 5 + 8;  // 8 expression stack slots.
 
   CodeGenerator* cgen_;
   MacroAssembler* masm_;
@@ -341,10 +352,6 @@ class VirtualFrame : public Malloced {
   // The index of the register frame element using each register, or
   // kIllegalIndex if a register is not on the frame.
   int register_locations_[kNumRegisters];
-
-  // The frame has an embedded register file that it uses to track registers
-  // used in the frame.
-  RegisterFile frame_registers_;
 
   // The index of the first parameter.  The receiver lies below the first
   // parameter.
@@ -403,9 +410,11 @@ class VirtualFrame : public Malloced {
   // Sync the range of elements in [begin, end).
   void SyncRange(int begin, int end);
 
-  // Sync a single element, assuming that its index is less than
-  // or equal to stack pointer + 1.
-  void RawSyncElementAt(int index);
+  // Sync a single unsynced element that lies beneath or at the stack pointer.
+  void SyncElementBelowStackPointer(int index);
+
+  // Sync a single unsynced element that lies just above the stack pointer.
+  void SyncElementByPushing(int index);
 
   // Push a copy of a frame slot (typically a local or parameter) on top of
   // the frame.
@@ -454,7 +463,7 @@ class VirtualFrame : public Malloced {
 
   // Call a code stub that has already been prepared for calling (via
   // PrepareForCall).
-  Result RawCallStub(CodeStub* stub, int frame_arg_count);
+  Result RawCallStub(CodeStub* stub);
 
   // Calls a code object which has already been prepared for calling
   // (via PrepareForCall).

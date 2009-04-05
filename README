@@ -2,3 +2,17 @@ This is a patched V8 version to support __noSuchMethod__. All unit tests pass.
 
 BUILD:
 Use scons... Example: scons mode=release library=shared sample=shell
+
+RUN:
+./shell
+    > var User = {};
+    > User.find_all_by_street_and_city('Commonwealth Ave', 'Boston');
+    (shell):1: TypeError: Object #<an Object> has no method 'find_all_by_street_and_city'
+    User.find_all_by_street_and_city('Commonwealth Ave', 'Boston');
+         ^
+    > User.__noSuchMethod__ = function(name, args) {print(name);for (var i in args) {print(args[i]);}};
+    function (name, args) {print(name);for (var i in args) {print(args[i]);}}
+    > User.find_all_by_street_and_city('Commonwealth Ave', 'Boston');
+    find_all_by_street_and_city
+    Commonwealth Ave
+    Boston

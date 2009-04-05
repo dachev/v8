@@ -1,4 +1,4 @@
-// Copyright 2008 the V8 project authors. All rights reserved.
+// Copyright 2009 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -342,6 +342,10 @@ void Shell::Initialize() {
   global_template->Set(String::New("load"), FunctionTemplate::New(Load));
   global_template->Set(String::New("quit"), FunctionTemplate::New(Quit));
   global_template->Set(String::New("version"), FunctionTemplate::New(Version));
+
+  Handle<ObjectTemplate> os_templ = ObjectTemplate::New();
+  AddOSMethods(os_templ);
+  global_template->Set(String::New("os"), os_templ);
 
   utility_context_ = Context::New(NULL, global_template);
   utility_context_->SetSecurityToken(Undefined());

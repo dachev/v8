@@ -708,29 +708,6 @@ class GenericBinaryOpStub : public CodeStub {
 };
 
 
-class InvokeBuiltinStub : public CodeStub {
- public:
-  enum Kind { Inc, Dec, ToNumber };
-  InvokeBuiltinStub(Kind kind, int argc) : kind_(kind), argc_(argc) { }
-
- private:
-  Kind kind_;
-  int argc_;
-
-  Major MajorKey() { return InvokeBuiltin; }
-  int MinorKey() { return (argc_ << 3) | static_cast<int>(kind_); }
-  void Generate(MacroAssembler* masm);
-
-#ifdef DEBUG
-  void Print() {
-    PrintF("InvokeBuiltinStub (kind %d, argc, %d)\n",
-           static_cast<int>(kind_),
-           argc_);
-  }
-#endif
-};
-
-
 void CodeGenerator::GenericBinaryOperation(Token::Value op) {
   VirtualFrame::SpilledScope spilled_scope(this);
   // sp[0] : y
@@ -868,11 +845,11 @@ void DeferredInlineSmiOperation::Generate() {
   }
 
   GenericBinaryOpStub igostub(op_);
-  Result arg0 = generator()->allocator()->Allocate(r0);
+  Result arg0 = generator()->allocator()->Allocate(r1);
   ASSERT(arg0.is_valid());
-  Result arg1 = generator()->allocator()->Allocate(r1);
+  Result arg1 = generator()->allocator()->Allocate(r0);
   ASSERT(arg1.is_valid());
-  generator()->frame()->CallStub(&igostub, &arg0, &arg1, 0);
+  generator()->frame()->CallStub(&igostub, &arg0, &arg1);
   exit_.Jump();
 }
 
@@ -3456,18 +3433,7 @@ void CodeGenerator::VisitCallRuntime(CallRuntime* node) {
   Comment cmnt(masm_, "[ CallRuntime");
   Runtime::Function* function = node->function();
 
-  if (function != NULL) {
-    // Push the arguments ("left-to-right").
-    int arg_count = args->length();
-    for (int i = 0; i < arg_count; i++) {
-      LoadAndSpill(args->at(i));
-    }
-
-    // Call the C runtime function.
-    frame_->CallRuntime(function, arg_count);
-    frame_->EmitPush(r0);
-
-  } else {
+  if (function == NULL) {
     // Prepare stack for calling JS runtime function.
     __ mov(r0, Operand(node->name()));
     frame_->EmitPush(r0);
@@ -3475,17 +3441,24 @@ void CodeGenerator::VisitCallRuntime(CallRuntime* node) {
     __ ldr(r1, GlobalObject());
     __ ldr(r0, FieldMemOperand(r1, GlobalObject::kBuiltinsOffset));
     frame_->EmitPush(r0);
+  }
 
-    int arg_count = args->length();
-    for (int i = 0; i < arg_count; i++) {
-      LoadAndSpill(args->at(i));
-    }
+  // Push the arguments ("left-to-right").
+  int arg_count = args->length();
+  for (int i = 0; i < arg_count; i++) {
+    LoadAndSpill(args->at(i));
+  }
 
+  if (function == NULL) {
     // Call the JS runtime function.
-    Handle<Code> stub = ComputeCallInitialize(args->length());
+    Handle<Code> stub = ComputeCallInitialize(arg_count);
     frame_->CallCodeObject(stub, RelocInfo::CODE_TARGET, arg_count + 1);
     __ ldr(cp, frame_->Context());
     frame_->Drop();
+    frame_->EmitPush(r0);
+  } else {
+    // Call the C runtime function.
+    frame_->CallRuntime(function, arg_count);
     frame_->EmitPush(r0);
   }
   ASSERT(frame_->height() == original_height + 1);
@@ -3700,22 +3673,27 @@ void CodeGenerator::VisitCountOperation(CountOperation* node) {
 
     // Slow case: Convert to number.
     slow.Bind();
-
-    // Postfix: Convert the operand to a number and store it as the result.
+    {
+      // Convert the operand to a number.
+      frame_->EmitPush(r0);
+      Result arg_count = allocator_->Allocate(r0);
+      ASSERT(arg_count.is_valid());
+      __ mov(arg_count.reg(), Operand(0));
+      frame_->InvokeBuiltin(Builtins::TO_NUMBER, CALL_JS, &arg_count, 1);
+    }
     if (is_postfix) {
-      InvokeBuiltinStub stub(InvokeBuiltinStub::ToNumber, 2);
-      frame_->CallStub(&stub, 0);
-      // Store to result (on the stack).
+      // Postfix: store to result (on the stack).
       __ str(r0, frame_->ElementAt(target.size()));
     }
 
-    // Compute the new value by calling the right JavaScript native.
+    // Compute the new value.
+    __ mov(r1, Operand(Smi::FromInt(1)));
+    frame_->EmitPush(r0);
+    frame_->EmitPush(r1);
     if (is_increment) {
-      InvokeBuiltinStub stub(InvokeBuiltinStub::Inc, 1);
-      frame_->CallStub(&stub, 0);
+      frame_->CallRuntime(Runtime::kNumberAdd, 2);
     } else {
-      InvokeBuiltinStub stub(InvokeBuiltinStub::Dec, 1);
-      frame_->CallStub(&stub, 0);
+      frame_->CallRuntime(Runtime::kNumberSub, 2);
     }
 
     // Store the new value in the target if not const.
@@ -4722,19 +4700,6 @@ void UnarySubStub::Generate(MacroAssembler* masm) {
 }
 
 
-void InvokeBuiltinStub::Generate(MacroAssembler* masm) {
-  __ push(r0);
-  __ mov(r0, Operand(0));  // set number of arguments
-  switch (kind_) {
-    case ToNumber: __ InvokeBuiltin(Builtins::TO_NUMBER, JUMP_JS); break;
-    case Inc:      __ InvokeBuiltin(Builtins::INC, JUMP_JS);       break;
-    case Dec:      __ InvokeBuiltin(Builtins::DEC, JUMP_JS);       break;
-    default: UNREACHABLE();
-  }
-  __ StubReturn(argc_);
-}
-
-
 void CEntryStub::GenerateThrowTOS(MacroAssembler* masm) {
   // r0 holds exception
   ASSERT(StackHandlerConstants::kSize == 6 * kPointerSize);  // adjust this code
@@ -4862,7 +4827,7 @@ void CEntryStub::GenerateCore(MacroAssembler* masm,
   // Notify the simulator of the transition to C code.
   __ swi(assembler::arm::call_rt_r5);
 #else /* !defined(__arm__) */
-  __ mov(pc, Operand(r5));
+  __ Jump(r5);
 #endif /* !defined(__arm__) */
 
   if (always_allocate) {
