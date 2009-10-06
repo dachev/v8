@@ -31,7 +31,8 @@
 #include "scopes.h"
 #include "usage-analyzer.h"
 
-namespace v8 { namespace internal {
+namespace v8 {
+namespace internal {
 
 // Weight boundaries
 static const int MinWeight = 1;
@@ -41,7 +42,7 @@ static const int InitialWeight = 100;
 
 class UsageComputer: public AstVisitor {
  public:
-  static bool Traverse(Node* node);
+  static bool Traverse(AstNode* node);
 
   void VisitBlock(Block* node);
   void VisitDeclaration(Declaration* node);
@@ -115,7 +116,7 @@ class WeightScaler BASE_EMBEDDED {
 // ----------------------------------------------------------------------------
 // Implementation of UsageComputer
 
-bool UsageComputer::Traverse(Node* node) {
+bool UsageComputer::Traverse(AstNode* node) {
   UsageComputer uc(InitialWeight, false);
   uc.Visit(node);
   return !uc.HasStackOverflow();
@@ -444,6 +445,7 @@ WeightScaler::~WeightScaler() {
 
 bool AnalyzeVariableUsage(FunctionLiteral* lit) {
   if (!FLAG_usage_computation) return true;
+  HistogramTimerScope timer(&Counters::usage_analysis);
   return UsageComputer::Traverse(lit);
 }
 

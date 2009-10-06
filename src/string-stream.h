@@ -28,7 +28,8 @@
 #ifndef V8_STRING_STREAM_H_
 #define V8_STRING_STREAM_H_
 
-namespace v8 { namespace internal {
+namespace v8 {
+namespace internal {
 
 
 class StringAllocator {
@@ -56,11 +57,10 @@ class HeapStringAllocator: public StringAllocator {
 
 
 // Allocator for use when no new c++ heap allocation is allowed.
-// Allocates all space up front and does no allocation while building
-// message.
+// Given a preallocated buffer up front and does no allocation while
+// building message.
 class NoAllocationStringAllocator: public StringAllocator {
  public:
-  explicit NoAllocationStringAllocator(unsigned bytes);
   NoAllocationStringAllocator(char* memory, unsigned size);
   char* allocate(unsigned bytes) { return space_; }
   char* grow(unsigned* bytes);
@@ -72,16 +72,30 @@ class NoAllocationStringAllocator: public StringAllocator {
 
 class FmtElm {
  public:
-  FmtElm(int value) : type_(INT) { data_.u_int_ = value; }  // NOLINT
-  explicit FmtElm(double value) : type_(DOUBLE) { data_.u_double_ = value; }  // NOLINT
-  FmtElm(const char* value) : type_(C_STR) { data_.u_c_str_ = value; }  // NOLINT
-  FmtElm(const Vector<const uc16>& value) : type_(LC_STR) { data_.u_lc_str_ = &value; } // NOLINT
-  FmtElm(Object* value) : type_(OBJ) { data_.u_obj_ = value; }  // NOLINT
-  FmtElm(Handle<Object> value) : type_(HANDLE) { data_.u_handle_ = value.location(); }  // NOLINT
-  FmtElm(void* value) : type_(INT) { data_.u_int_ = reinterpret_cast<int>(value); }  // NOLINT
+  FmtElm(int value) : type_(INT) {  // NOLINT
+    data_.u_int_ = value;
+  }
+  explicit FmtElm(double value) : type_(DOUBLE) {
+    data_.u_double_ = value;
+  }
+  FmtElm(const char* value) : type_(C_STR) {  // NOLINT
+    data_.u_c_str_ = value;
+  }
+  FmtElm(const Vector<const uc16>& value) : type_(LC_STR) {  // NOLINT
+    data_.u_lc_str_ = &value;
+  }
+  FmtElm(Object* value) : type_(OBJ) {  // NOLINT
+    data_.u_obj_ = value;
+  }
+  FmtElm(Handle<Object> value) : type_(HANDLE) {  // NOLINT
+    data_.u_handle_ = value.location();
+  }
+  FmtElm(void* value) : type_(POINTER) {  // NOLINT
+    data_.u_pointer_ = value;
+  }
  private:
   friend class StringStream;
-  enum Type { INT, DOUBLE, C_STR, LC_STR, OBJ, HANDLE };
+  enum Type { INT, DOUBLE, C_STR, LC_STR, OBJ, HANDLE, POINTER };
   Type type_;
   union {
     int u_int_;
@@ -90,6 +104,7 @@ class FmtElm {
     const Vector<const uc16>* u_lc_str_;
     Object* u_obj_;
     Object** u_handle_;
+    void* u_pointer_;
   } data_;
 };
 
@@ -162,8 +177,8 @@ class StringStream {
   unsigned length_;  // does not include terminating 0-character
   char* buffer_;
 
+  bool full() const { return (capacity_ - length_) == 1; }
   int space() const { return capacity_ - length_; }
-  char* cursor() const { return buffer_ + length_; }
 
   DISALLOW_IMPLICIT_CONSTRUCTORS(StringStream);
 };

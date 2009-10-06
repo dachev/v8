@@ -28,7 +28,8 @@
 #ifndef V8_FRAMES_H_
 #define V8_FRAMES_H_
 
-namespace v8 { namespace internal {
+namespace v8 {
+namespace internal {
 
 typedef uint32_t RegList;
 
@@ -76,9 +77,6 @@ class StackHandler BASE_EMBEDDED {
   // Garbage collection support.
   void Cook(Code* code);
   void Uncook(Code* code);
-
-  // TODO(1233780): Get rid of the code slot in stack handlers.
-  static const int kCodeNotPresent = 0;
 
  private:
   // Accessors.
@@ -131,7 +129,7 @@ class StackFrame BASE_EMBEDDED {
   // Accessors.
   Address sp() const { return state_.sp; }
   Address fp() const { return state_.fp; }
-  Address pp() const { return GetCallerStackPointer(); }
+  Address caller_sp() const { return GetCallerStackPointer(); }
 
   Address pc() const { return *pc_address(); }
   void set_pc(Address pc) { *pc_address() = pc; }
@@ -139,7 +137,7 @@ class StackFrame BASE_EMBEDDED {
   Address* pc_address() const { return state_.pc_address; }
 
   // Get the id of this stack frame.
-  Id id() const { return static_cast<Id>(OffsetFrom(pp())); }
+  Id id() const { return static_cast<Id>(OffsetFrom(caller_sp())); }
 
   // Checks if this frame includes any stack handlers.
   bool HasHandler() const;
@@ -336,7 +334,6 @@ class StandardFrame: public StackFrame {
   virtual void ComputeCallerState(State* state) const;
 
   // Accessors.
-  inline Address caller_sp() const;
   inline Address caller_fp() const;
   inline Address caller_pc() const;
 
@@ -373,7 +370,6 @@ class JavaScriptFrame: public StandardFrame {
   virtual Type type() const { return JAVA_SCRIPT; }
 
   // Accessors.
-  inline bool is_at_function() const;
   inline Object* function() const;
   inline Object* receiver() const;
   inline void set_receiver(Object* value);
@@ -414,11 +410,19 @@ class JavaScriptFrame: public StandardFrame {
 
  protected:
   explicit JavaScriptFrame(StackFrameIterator* iterator)
-      : StandardFrame(iterator) { }
+      : StandardFrame(iterator), disable_heap_access_(false) { }
 
   virtual Address GetCallerStackPointer() const;
 
+  // When this mode is enabled it is not allowed to access heap objects.
+  // This is a special mode used when gathering stack samples in profiler.
+  // A shortcoming is that caller's SP value will be calculated incorrectly
+  // (see GetCallerStackPointer implementation), but it is not used for stack
+  // sampling.
+  void DisableHeapAccess() { disable_heap_access_ = true; }
+
  private:
+  bool disable_heap_access_;
   inline Object* function_slot_object() const;
 
   friend class StackFrameIterator;
@@ -430,14 +434,6 @@ class JavaScriptFrame: public StandardFrame {
 // match the formal number of parameters.
 class ArgumentsAdaptorFrame: public JavaScriptFrame {
  public:
-  // This sentinel value is temporarily used to distinguish arguments
-  // adaptor frames from ordinary JavaScript frames. If a frame has
-  // the sentinel as its context, it is an arguments adaptor frame. It
-  // must be tagged as a small integer to avoid GC issues. Crud.
-  enum {
-    SENTINEL = (1 << kSmiTagSize) | kSmiTag
-  };
-
   virtual Type type() const { return ARGUMENTS_ADAPTOR; }
 
   // Determine the code for the frame.
@@ -638,6 +634,7 @@ class SafeStackFrameIterator BASE_EMBEDDED {
   bool IsValidStackAddress(Address addr) const {
     return IsWithinBounds(low_bound_, high_bound_, addr);
   }
+  bool CanIterateHandles(StackFrame* frame, StackHandler* handler);
   bool IsValidFrame(StackFrame* frame) const;
   bool IsValidCaller(StackFrame* frame);
 

@@ -177,15 +177,15 @@
 				>
 			</File>
 			<File
-				RelativePath="..\..\src\assembler-arm-inl.h"
+				RelativePath="..\..\src\arm\assembler-arm-inl.h"
 				>
 			</File>
 			<File
-				RelativePath="..\..\src\assembler-arm.cc"
+				RelativePath="..\..\src\arm\assembler-arm.cc"
 				>
 			</File>
 			<File
-				RelativePath="..\..\src\assembler-arm.h"
+				RelativePath="..\..\src\arm\assembler-arm.h"
 				>
 			</File>
 			<File
@@ -221,7 +221,7 @@
 				>
 			</File>
 			<File
-				RelativePath="..\..\src\builtins-arm.cc"
+				RelativePath="..\..\src\arm\builtins-arm.cc"
 				>
 			</File>
 			<File
@@ -235,6 +235,18 @@
 			<File
 				RelativePath="..\..\src\bytecodes-irregexp.h"
 				>
+			</File>
+			<File
+			        RelativePath="..\..\src\arm\cfg-arm.cc"
+			        >
+			</File>
+			<File
+			        RelativePath="..\..\src\cfg.cc"
+			        >
+			</File>
+			<File
+			        RelativePath="..\..\src\cfg.h"
+			        >
 			</File>
 			<File
 				RelativePath="..\..\src\char-predicates-inl.h"
@@ -265,11 +277,11 @@
 				>
 			</File>
 			<File
-				RelativePath="..\..\src\codegen-arm.cc"
+				RelativePath="..\..\src\arm\codegen-arm.cc"
 				>
 			</File>
 			<File
-				RelativePath="..\..\src\codegen-arm.h"
+				RelativePath="..\..\src\arm\codegen-arm.h"
 				>
 			</File>
 			<File
@@ -301,7 +313,7 @@
 				>
 			</File>
 			<File
-				RelativePath="..\..\src\constants-arm.h"
+				RelativePath="..\..\src\arm\constants-arm.h"
 				>
 			</File>
 			<File
@@ -333,7 +345,7 @@
 				>
 			</File>
 			<File
-				RelativePath="..\..\src\cpu-arm.cc"
+				RelativePath="..\..\src\arm\cpu-arm.cc"
 				>
 			</File>
 			<File
@@ -349,7 +361,15 @@
 				>
 			</File>
 			<File
-				RelativePath="..\..\src\debug-arm.cc"
+				RelativePath="..\..\src\debug-agent.cc"
+				>
+			</File>
+			<File
+				RelativePath="..\..\src\debug-agent.h"
+				>
+			</File>
+			<File
+				RelativePath="..\..\src\arm\debug-arm.cc"
 				>
 			</File>
 			<File
@@ -393,11 +413,19 @@
 				>
 			</File>
 			<File
-				RelativePath="..\..\src\frames-arm.cc"
+				RelativePath="..\..\src\frame-element.cc"
 				>
 			</File>
 			<File
-				RelativePath="..\..\src\frames-arm.h"
+				RelativePath="..\..\src\frame-element.h"
+				>
+			</File>
+			<File
+				RelativePath="..\..\src\arm\frames-arm.cc"
+				>
+			</File>
+			<File
+				RelativePath="..\..\src\arm\frames-arm.h"
 				>
 			</File>
 			<File
@@ -410,6 +438,14 @@
 			</File>
 			<File
 				RelativePath="..\..\src\frames.h"
+				>
+			</File>
+			<File
+				RelativePath="..\..\src\func-name-inferrer.cc"
+				>
+			</File>
+			<File
+				RelativePath="..\..\src\func-name-inferrer.h"
 				>
 			</File>
 			<File
@@ -457,7 +493,7 @@
 				>
 			</File>
 			<File
-				RelativePath="..\..\src\ic-arm.cc"
+				RelativePath="..\..\src\arm\ic-arm.cc"
 				>
 			</File>
 			<File
@@ -493,11 +529,7 @@
 				>
 			</File>
 			<File
-				RelativePath="..\..\src\jump-target-arm.cc"
-				>
-			</File>
-			<File
-				RelativePath="..\..\src\jsregexp-inl.h"
+				RelativePath="..\..\src\arm\jump-target-arm.cc"
 				>
 			</File>
 			<File
@@ -521,15 +553,27 @@
 				>
 			</File>
 			<File
+				RelativePath="..\..\src\log-inl.h"
+				>
+			</File>
+			<File
 				RelativePath="..\..\src\log.h"
 				>
 			</File>
 			<File
-				RelativePath="..\..\src\macro-assembler-arm.cc"
+				RelativePath="..\..\src\log-utils.cc"
 				>
 			</File>
 			<File
-				RelativePath="..\..\src\macro-assembler-arm.h"
+				RelativePath="..\..\src\log-utils.h"
+				>
+			</File>
+			<File
+				RelativePath="..\..\src\arm\macro-assembler-arm.cc"
+				>
+			</File>
+			<File
+				RelativePath="..\..\src\arm\macro-assembler-arm.h"
 				>
 			</File>
 			<File
@@ -585,6 +629,14 @@
 				>
 			</File>
 			<File
+				RelativePath="..\..\src\oprofile-agent.cc"
+				>
+			</File>
+			<File
+				RelativePath="..\..\src\oprofile-agent.h"
+				>
+			</File>
+			<File
 				RelativePath="..\..\src\parser.cc"
 				>
 			</File>
@@ -625,11 +677,11 @@
 				>
 			</File>
 			<File
-				RelativePath="..\..\src\regexp-macro-assembler-arm.cc"
+				RelativePath="..\..\src\arm\regexp-macro-assembler-arm.cc"
 				>
 			</File>
 			<File
-				RelativePath="..\..\src\regexp-macro-assembler-arm.h"
+				RelativePath="..\..\src\arm\regexp-macro-assembler-arm.h"
 				>
 			</File>
 			<File
@@ -669,7 +721,7 @@
 				>
 			</File>
 			<File
-				RelativePath="..\..\src\register-allocator-arm.cc"
+				RelativePath="..\..\src\arm\register-allocator-arm.cc"
 				>
 			</File>
 			<File
@@ -733,11 +785,11 @@
 				>
 			</File>
 			<File
-				RelativePath="..\..\src\simulator-arm.cc"
+				RelativePath="..\..\src\arm\simulator-arm.cc"
 				>
 			</File>
 			<File
-				RelativePath="..\..\src\simulator-arm.h"
+				RelativePath="..\..\src\arm\simulator-arm.h"
 				>
 			</File>
 			<File
@@ -761,7 +813,7 @@
 				>
 			</File>
 			<File
-				RelativePath="..\..\src\stub-cache-arm.cc"
+				RelativePath="..\..\src\arm\stub-cache-arm.cc"
 				>
 			</File>
 			<File
@@ -845,11 +897,19 @@
 				>
 			</File>
 			<File
+				RelativePath="..\..\src\version.cc"
+				>
+			</File>
+			<File
+				RelativePath="..\..\src\version.h"
+				>
+			</File>
+			<File
 				RelativePath="..\..\src\virtual-frame.h"
 				>
 			</File>
 			<File
-				RelativePath="..\..\src\virtual-frame-arm.h"
+				RelativePath="..\..\src\arm\virtual-frame-arm.h"
 				>
 			</File>
 			<File
@@ -857,7 +917,7 @@
 				>
 			</File>
 			<File
-				RelativePath="..\..\src\virtual-frame-arm.cc"
+				RelativePath="..\..\src\arm\virtual-frame-arm.cc"
 				>
 			</File>
 			<File
@@ -876,7 +936,7 @@
 				Name="third party"
 				>
 				<File
-					RelativePath="..\..\src\disasm-arm.cc"
+					RelativePath="..\..\src\arm\disasm-arm.cc"
 					>
 				</File>
 				<File

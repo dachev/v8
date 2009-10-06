@@ -144,11 +144,17 @@ bool ThreadManager::RestoreThread() {
   char* from = state->data();
   from = HandleScopeImplementer::RestoreThread(from);
   from = Top::RestoreThread(from);
+#ifdef ENABLE_DEBUGGER_SUPPORT
   from = Debug::RestoreDebug(from);
+#endif
   from = StackGuard::RestoreStackGuard(from);
   from = RegExpStack::RestoreStack(from);
   from = Bootstrapper::RestoreState(from);
   Thread::SetThreadLocal(thread_state_key, NULL);
+  if (state->terminate_on_restore()) {
+    StackGuard::TerminateExecution();
+    state->set_terminate_on_restore(false);
+  }
   state->set_id(kInvalidId);
   state->Unlink();
   state->LinkInto(ThreadState::FREE_LIST);
@@ -172,7 +178,9 @@ void ThreadManager::Unlock() {
 static int ArchiveSpacePerThread() {
   return HandleScopeImplementer::ArchiveSpacePerThread() +
                             Top::ArchiveSpacePerThread() +
+#ifdef ENABLE_DEBUGGER_SUPPORT
                           Debug::ArchiveSpacePerThread() +
+#endif
                      StackGuard::ArchiveSpacePerThread() +
                     RegExpStack::ArchiveSpacePerThread() +
                    Bootstrapper::ArchiveSpacePerThread();
@@ -184,6 +192,7 @@ ThreadState* ThreadState::in_use_anchor_ = new ThreadState();
 
 
 ThreadState::ThreadState() : id_(ThreadManager::kInvalidId),
+                             terminate_on_restore_(false),
                              next_(this), previous_(this) {
 }
 
@@ -257,9 +266,13 @@ void ThreadManager::EagerlyArchiveThread() {
   ThreadState* state = lazily_archived_thread_state_;
   state->LinkInto(ThreadState::IN_USE_LIST);
   char* to = state->data();
+  // Ensure that data containing GC roots are archived first, and handle them
+  // in ThreadManager::Iterate(ObjectVisitor*).
   to = HandleScopeImplementer::ArchiveThread(to);
   to = Top::ArchiveThread(to);
+#ifdef ENABLE_DEBUGGER_SUPPORT
   to = Debug::ArchiveDebug(to);
+#endif
   to = StackGuard::ArchiveStackGuard(to);
   to = RegExpStack::ArchiveStack(to);
   to = Bootstrapper::ArchiveState(to);
@@ -303,13 +316,27 @@ void ThreadManager::MarkCompactEpilogue(bool is_compacting) {
 
 
 int ThreadManager::CurrentId() {
-  return bit_cast<int, void*>(Thread::GetThreadLocal(thread_id_key));
+  return Thread::GetThreadLocalInt(thread_id_key);
 }
 
 
 void ThreadManager::AssignId() {
-  if (Thread::GetThreadLocal(thread_id_key) == NULL) {
-    Thread::SetThreadLocal(thread_id_key, bit_cast<void*, int>(next_id_++));
+  if (!Thread::HasThreadLocal(thread_id_key)) {
+    ASSERT(Locker::IsLocked());
+    int thread_id = next_id_++;
+    Thread::SetThreadLocalInt(thread_id_key, thread_id);
+    Top::set_thread_id(thread_id);
+  }
+}
+
+
+void ThreadManager::TerminateExecution(int thread_id) {
+  for (ThreadState* state = ThreadState::FirstInUse();
+       state != NULL;
+       state = state->Next()) {
+    if (thread_id == state->id()) {
+      state->set_terminate_on_restore(true);
+    }
   }
 }
 

@@ -33,12 +33,13 @@
 #include "handles.h"
 #include "api.h"
 
-namespace v8 { namespace internal {
+namespace v8 {
+namespace internal {
 
 template<class T>
 Handle<T>::Handle(T* obj) {
   ASSERT(!obj->IsFailure());
-  location_ = reinterpret_cast<T**>(HandleScope::CreateHandle(obj));
+  location_ = HandleScope::CreateHandle(obj);
 }
 
 

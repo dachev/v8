@@ -27,21 +27,8 @@
 
 #include "v8.h"
 
-namespace v8 { namespace internal {
-
-
-void DescriptorWriter::Write(Descriptor* desc) {
-  ASSERT(desc->key_->IsSymbol());
-  descriptors_->Set(pos_, desc);
-  advance();
-}
-
-
-void DescriptorWriter::WriteFrom(DescriptorReader* reader) {
-  Descriptor desc;
-  reader->Get(&desc);
-  Write(&desc);
-}
+namespace v8 {
+namespace internal {
 
 
 #ifdef DEBUG

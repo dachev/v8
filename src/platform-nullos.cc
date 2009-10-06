@@ -37,7 +37,8 @@
 #include "platform.h"
 
 
-namespace v8 { namespace internal {
+namespace v8 {
+namespace internal {
 
 // Give V8 the opportunity to override the default ceil behaviour.
 double ceiling(double x) {
@@ -79,7 +80,7 @@ int64_t OS::Ticks() {
 
 // Returns a string identifying the current timezone taking into
 // account daylight saving.
-char* OS::LocalTimezone(double time) {
+const char* OS::LocalTimezone(double time) {
   UNIMPLEMENTED();
   return "<none>";
 }
@@ -215,7 +216,7 @@ void OS::LogSharedLibraryAddresses() {
 }
 
 
-int OS::StackWalk(OS::StackFrame* frames, int frames_size) {
+int OS::StackWalk(Vector<OS::StackFrame> frames) {
   UNIMPLEMENTED();
   return 0;
 }

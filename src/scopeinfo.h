@@ -30,7 +30,8 @@
 
 #include "variables.h"
 
-namespace v8 { namespace internal {
+namespace v8 {
+namespace internal {
 
 // Scope information represents information about a functions's
 // scopes (currently only one, because we don't do any inlining)
@@ -149,6 +150,86 @@ class ScopeInfo BASE_EMBEDDED {
   List<Handle<String>, Allocator > context_slots_;
   List<Variable::Mode, Allocator > context_modes_;
 };
+
+class ZoneScopeInfo: public ScopeInfo<ZoneListAllocationPolicy> {
+ public:
+  // Create a ZoneScopeInfo instance from a scope.
+  explicit ZoneScopeInfo(Scope* scope)
+      : ScopeInfo<ZoneListAllocationPolicy>(scope) {}
+
+  // Create a ZoneScopeInfo instance from a Code object.
+  explicit ZoneScopeInfo(Code* code)
+      :  ScopeInfo<ZoneListAllocationPolicy>(code) {}
+};
+
+
+// Cache for mapping (code, property name) into context slot index.
+// The cache contains both positive and negative results.
+// Slot index equals -1 means the property is absent.
+// Cleared at startup and prior to mark sweep collection.
+class ContextSlotCache {
+ public:
+  // Lookup context slot index for (code, name).
+  // If absent, kNotFound is returned.
+  static int Lookup(Code* code,
+                    String* name,
+                    Variable::Mode* mode);
+
+  // Update an element in the cache.
+  static void Update(Code* code,
+                     String* name,
+                     Variable::Mode mode,
+                     int slot_index);
+
+  // Clear the cache.
+  static void Clear();
+
+  static const int kNotFound = -2;
+ private:
+  inline static int Hash(Code* code, String* name);
+
+#ifdef DEBUG
+  static void ValidateEntry(Code* code,
+                            String* name,
+                            Variable::Mode mode,
+                            int slot_index);
+#endif
+
+  static const int kLength = 256;
+  struct Key {
+    Code* code;
+    String* name;
+  };
+
+  struct Value {
+    Value(Variable::Mode mode, int index) {
+      ASSERT(ModeField::is_valid(mode));
+      ASSERT(IndexField::is_valid(index));
+      value_ = ModeField::encode(mode) | IndexField::encode(index);
+      ASSERT(mode == this->mode());
+      ASSERT(index == this->index());
+    }
+
+    inline Value(uint32_t value) : value_(value) {}
+
+    uint32_t raw() { return value_; }
+
+    Variable::Mode mode() { return ModeField::decode(value_); }
+
+    int index() { return IndexField::decode(value_); }
+
+    // Bit fields in value_ (type, shift, size). Must be public so the
+    // constants can be embedded in generated code.
+    class ModeField:  public BitField<Variable::Mode, 0, 3> {};
+    class IndexField: public BitField<int,            3, 32-3> {};
+   private:
+    uint32_t value_;
+  };
+
+  static Key keys_[kLength];
+  static uint32_t values_[kLength];
+};
+
 
 } }  // namespace v8::internal
 

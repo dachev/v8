@@ -25,10 +25,11 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-#ifndef REGEXP_STACK_H_
-#define REGEXP_STACK_H_
+#ifndef V8_REGEXP_STACK_H_
+#define V8_REGEXP_STACK_H_
 
-namespace v8 { namespace internal {
+namespace v8 {
+namespace internal {
 
 // Maintains a per-v8thread stack area that can be used by irregexp
 // implementation for its backtracking stack.
@@ -47,7 +48,7 @@ class RegExpStack {
   ~RegExpStack();  // Releases the stack if it has grown.
 
   // Gives the top of the memory used as stack.
-  static Address stack_top() {
+  static Address stack_base() {
     ASSERT(thread_local_.memory_size_ != 0);
     return thread_local_.memory_ + thread_local_.memory_size_;
   }
@@ -73,7 +74,7 @@ class RegExpStack {
 
  private:
   // Artificial limit used when no memory has been allocated.
-  static const uint32_t kMemoryTop = 0xffffffff;
+  static const uintptr_t kMemoryTop = static_cast<uintptr_t>(-1);
 
   // Minimal size of allocated stack area.
   static const size_t kMinimumStackSize = 1 * KB;
@@ -103,4 +104,4 @@ class RegExpStack {
 
 }}  // namespace v8::internal
 
-#endif /* REGEXP_STACK_H_ */
+#endif  // V8_REGEXP_STACK_H_

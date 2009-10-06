@@ -33,7 +33,8 @@
 #include "regexp-macro-assembler-irregexp-inl.h"
 
 
-namespace v8 { namespace internal {
+namespace v8 {
+namespace internal {
 
 
 RegExpMacroAssemblerIrregexp::RegExpMacroAssemblerIrregexp(Vector<byte> buffer)
@@ -46,6 +47,7 @@ RegExpMacroAssemblerIrregexp::RegExpMacroAssemblerIrregexp(Vector<byte> buffer)
 
 RegExpMacroAssemblerIrregexp::~RegExpMacroAssemblerIrregexp() {
   if (backtrack_.is_linked()) backtrack_.Unuse();
+  if (own_buffer_) buffer_.Dispose();
 }
 
 
@@ -370,37 +372,6 @@ void RegExpMacroAssemblerIrregexp::CheckNotRegistersEqual(int reg1,
   Emit(BC_CHECK_NOT_REGS_EQUAL, reg1);
   Emit32(reg2);
   EmitOrLink(on_not_equal);
-}
-
-
-void RegExpMacroAssemblerIrregexp::CheckBitmap(uc16 start,
-                                           Label* bitmap,
-                                           Label* on_zero) {
-  UNIMPLEMENTED();
-}
-
-
-void RegExpMacroAssemblerIrregexp::DispatchHalfNibbleMap(
-    uc16 start,
-    Label* half_nibble_map,
-    const Vector<Label*>& table) {
-  UNIMPLEMENTED();
-}
-
-
-void RegExpMacroAssemblerIrregexp::DispatchByteMap(
-    uc16 start,
-    Label* byte_map,
-    const Vector<Label*>& table) {
-  UNIMPLEMENTED();
-}
-
-
-void RegExpMacroAssemblerIrregexp::DispatchHighByteMap(
-    byte start,
-    Label* byte_map,
-    const Vector<Label*>& table) {
-  UNIMPLEMENTED();
 }
 
 

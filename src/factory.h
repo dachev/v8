@@ -28,9 +28,12 @@
 #ifndef V8_FACTORY_H_
 #define V8_FACTORY_H_
 
+#include "globals.h"
 #include "heap.h"
+#include "zone-inl.h"
 
-namespace v8 { namespace internal {
+namespace v8 {
+namespace internal {
 
 
 // Interface for handle based allocation.
@@ -45,7 +48,9 @@ class Factory : public AllStatic {
   // Allocate a new fixed array with non-existing entries (the hole).
   static Handle<FixedArray> NewFixedArrayWithHoles(int size);
 
-  static Handle<Dictionary> NewDictionary(int at_least_space_for);
+  static Handle<NumberDictionary> NewNumberDictionary(int at_least_space_for);
+
+  static Handle<StringDictionary> NewStringDictionary(int at_least_space_for);
 
   static Handle<DescriptorArray> NewDescriptorArray(int number_of_descriptors);
 
@@ -87,7 +92,8 @@ class Factory : public AllStatic {
       Vector<const char> str,
       PretenureFlag pretenure = NOT_TENURED);
 
-  static Handle<String> NewStringFromTwoByte(Vector<const uc16> str);
+  static Handle<String> NewStringFromTwoByte(Vector<const uc16> str,
+      PretenureFlag pretenure = NOT_TENURED);
 
   // Allocates and partially initializes a TwoByte String. The characters of
   // the string are uninitialized. Currently used in regexp code only, where
@@ -149,11 +155,15 @@ class Factory : public AllStatic {
   static Handle<ByteArray> NewByteArray(int length,
                                         PretenureFlag pretenure = NOT_TENURED);
 
+  static Handle<PixelArray> NewPixelArray(int length,
+      uint8_t* external_pointer,
+      PretenureFlag pretenure = NOT_TENURED);
+
   static Handle<Map> NewMap(InstanceType type, int instance_size);
 
   static Handle<JSObject> NewFunctionPrototype(Handle<JSFunction> function);
 
-  static Handle<Map> CopyMap(Handle<Map> map);
+  static Handle<Map> CopyMapDropDescriptors(Handle<Map> map);
 
   // Copy the map adding more inobject properties if possible without
   // overflowing the instance size.
@@ -181,6 +191,9 @@ class Factory : public AllStatic {
   static Handle<JSObject> NewJSObject(Handle<JSFunction> constructor,
                                       PretenureFlag pretenure = NOT_TENURED);
 
+  // Global objects are pretenured.
+  static Handle<GlobalObject> NewGlobalObject(Handle<JSFunction> constructor);
+
   // JS objects are pretenured when allocated by the bootstrapper and
   // runtime.
   static Handle<JSObject> NewJSObjectFromMap(Handle<Map> map);
@@ -202,8 +215,10 @@ class Factory : public AllStatic {
       Handle<JSFunction> boilerplate,
       Handle<Context> context);
 
-  static Handle<Code> NewCode(const CodeDesc& desc, ScopeInfo<>* sinfo,
-                              Code::Flags flags, Handle<Object> self_reference);
+  static Handle<Code> NewCode(const CodeDesc& desc,
+                              ZoneScopeInfo* sinfo,
+                              Code::Flags flags,
+                              Handle<Object> self_reference);
 
   static Handle<Code> CopyCode(Handle<Code> code);
 
@@ -290,13 +305,19 @@ class Factory : public AllStatic {
                                 Handle<JSObject> instance,
                                 bool* pending_exception);
 
-#define ROOT_ACCESSOR(type, name) \
-  static Handle<type> name() { return Handle<type>(&Heap::name##_); }
+#define ROOT_ACCESSOR(type, name, camel_name)                                  \
+  static inline Handle<type> name() {                                          \
+    return Handle<type>(bit_cast<type**, Object**>(                            \
+        &Heap::roots_[Heap::k##camel_name##RootIndex]));                       \
+  }
   ROOT_LIST(ROOT_ACCESSOR)
 #undef ROOT_ACCESSOR_ACCESSOR
 
 #define SYMBOL_ACCESSOR(name, str) \
-  static Handle<String> name() { return Handle<String>(&Heap::name##_); }
+  static inline Handle<String> name() {                                        \
+    return Handle<String>(bit_cast<String**, Object**>(                        \
+        &Heap::roots_[Heap::k##name##RootIndex]));                             \
+  }
   SYMBOL_LIST(SYMBOL_ACCESSOR)
 #undef SYMBOL_ACCESSOR
 
@@ -306,12 +327,14 @@ class Factory : public AllStatic {
 
   static Handle<SharedFunctionInfo> NewSharedFunctionInfo(Handle<String> name);
 
-  static Handle<Dictionary> DictionaryAtNumberPut(Handle<Dictionary>,
-                                                  uint32_t key,
-                                                  Handle<Object> value);
+  static Handle<NumberDictionary> DictionaryAtNumberPut(
+      Handle<NumberDictionary>,
+      uint32_t key,
+      Handle<Object> value);
 
+#ifdef ENABLE_DEBUGGER_SUPPORT
   static Handle<DebugInfo> NewDebugInfo(Handle<SharedFunctionInfo> shared);
-
+#endif
 
   // Return a map using the map cache in the global context.
   // The key the an ordered set of property names.

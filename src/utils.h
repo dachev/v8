@@ -30,7 +30,8 @@
 
 #include <stdlib.h>
 
-namespace v8 { namespace internal {
+namespace v8 {
+namespace internal {
 
 // ----------------------------------------------------------------------------
 // General helper functions
@@ -40,8 +41,6 @@ template <typename T>
 static inline bool IsPowerOf2(T x) {
   return (x & (x - 1)) == 0;
 }
-
-
 
 
 // The C++ standard leaves the semantics of '>>' undefined for
@@ -56,7 +55,7 @@ static inline int ArithmeticShiftRight(int x, int s) {
 // This allows conversion of Addresses and integral types into
 // 0-relative int offsets.
 template <typename T>
-static inline int OffsetFrom(T x) {
+static inline intptr_t OffsetFrom(T x) {
   return x - static_cast<T>(0);
 }
 
@@ -65,7 +64,7 @@ static inline int OffsetFrom(T x) {
 // This allows conversion of 0-relative int offsets into Addresses and
 // integral types.
 template <typename T>
-static inline T AddressFrom(int x) {
+static inline T AddressFrom(intptr_t x) {
   return static_cast<T>(0) + x;
 }
 
@@ -115,8 +114,10 @@ static inline bool IsAligned(T value, T alignment) {
 
 
 // Returns true if (addr + offset) is aligned.
-static inline bool IsAddressAligned(Address addr, int alignment, int offset) {
-  int offs = OffsetFrom(addr + offset);
+static inline bool IsAddressAligned(Address addr,
+                                    intptr_t alignment,
+                                    int offset) {
+  intptr_t offs = OffsetFrom(addr + offset);
   return IsAligned(offs, alignment);
 }
 
@@ -204,6 +205,12 @@ inline byte* DecodeUnsignedIntBackward(byte* p, unsigned int* x) {
   *x = r | ((static_cast<unsigned int>(b) - 128) << s);
   return p;
 }
+
+
+// ----------------------------------------------------------------------------
+// Hash function.
+
+uint32_t ComputeIntegerHash(uint32_t key);
 
 
 // ----------------------------------------------------------------------------
@@ -357,6 +364,11 @@ class Vector {
     Sort(PointerValueCompare<T>);
   }
 
+  void Truncate(int length) {
+    ASSERT(length <= length_);
+    length_ = length;
+  }
+
   // Releases the array underlying this vector. Once disposed the
   // vector is empty.
   void Dispose() {
@@ -373,6 +385,9 @@ class Vector {
 
   // Factory method for creating empty vectors.
   static Vector<T> empty() { return Vector<T>(NULL, 0); }
+
+ protected:
+  void set_start(T* start) { start_ = start; }
 
  private:
   T* start_;
@@ -401,21 +416,47 @@ template <typename T, int kSize>
 class EmbeddedVector : public Vector<T> {
  public:
   EmbeddedVector() : Vector<T>(buffer_, kSize) { }
+
+  // When copying, make underlying Vector to reference our buffer.
+  EmbeddedVector(const EmbeddedVector& rhs)
+      : Vector<T>(rhs) {
+    memcpy(buffer_, rhs.buffer_, sizeof(T) * kSize);
+    set_start(buffer_);
+  }
+
+  EmbeddedVector& operator=(const EmbeddedVector& rhs) {
+    if (this == &rhs) return *this;
+    Vector<T>::operator=(rhs);
+    memcpy(buffer_, rhs.buffer_, sizeof(T) * kSize);
+    set_start(buffer_);
+    return *this;
+  }
+
  private:
   T buffer_[kSize];
 };
 
 
+template <typename T>
+class ScopedVector : public Vector<T> {
+ public:
+  explicit ScopedVector(int length) : Vector<T>(NewArray<T>(length), length) { }
+  ~ScopedVector() {
+    DeleteArray(this->start());
+  }
+};
+
+
 inline Vector<const char> CStrVector(const char* data) {
-  return Vector<const char>(data, strlen(data));
+  return Vector<const char>(data, static_cast<int>(strlen(data)));
 }
 
 inline Vector<char> MutableCStrVector(char* data) {
-  return Vector<char>(data, strlen(data));
+  return Vector<char>(data, static_cast<int>(strlen(data)));
 }
 
 inline Vector<char> MutableCStrVector(char* data, int max) {
-  int length = strlen(data);
+  int length = static_cast<int>(strlen(data));
   return Vector<char>(data, (length < max) ? length : max);
 }
 
@@ -517,7 +558,7 @@ class StringBuilder {
 template <typename sourcechar, typename sinkchar>
 static inline void CopyChars(sinkchar* dest, const sourcechar* src, int chars) {
   sinkchar* limit = dest + chars;
-#ifdef CAN_READ_UNALIGNED
+#ifdef V8_HOST_CAN_READ_UNALIGNED
   if (sizeof(*dest) == sizeof(*src)) {
     // Number of characters in a uint32_t.
     static const int kStepSize = sizeof(uint32_t) / sizeof(*dest);  // NOLINT

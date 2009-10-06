@@ -30,7 +30,8 @@
 
 #include "macro-assembler.h"
 
-namespace v8 { namespace internal {
+namespace v8 {
+namespace internal {
 
 
 // The stub cache is used for megamorphic calls and property accesses.
@@ -77,6 +78,13 @@ class StubCache : public AllStatic {
   static Object* ComputeLoadNormal(String* name, JSObject* receiver);
 
 
+  static Object* ComputeLoadGlobal(String* name,
+                                   JSObject* receiver,
+                                   GlobalObject* holder,
+                                   JSGlobalPropertyCell* cell,
+                                   bool is_dont_delete);
+
+
   // ---
 
   static Object* ComputeKeyedLoadField(String* name,
@@ -111,6 +119,10 @@ class StubCache : public AllStatic {
                                    int field_index,
                                    Map* transition = NULL);
 
+  static Object* ComputeStoreGlobal(String* name,
+                                    GlobalObject* receiver,
+                                    JSGlobalPropertyCell* cell);
+
   static Object* ComputeStoreCallback(String* name,
                                       JSObject* receiver,
                                       AccessorInfo* callback);
@@ -127,38 +139,52 @@ class StubCache : public AllStatic {
   // ---
 
   static Object* ComputeCallField(int argc,
+                                  InLoopFlag in_loop,
                                   String* name,
                                   Object* object,
                                   JSObject* holder,
                                   int index);
 
   static Object* ComputeCallConstant(int argc,
+                                     InLoopFlag in_loop,
                                      String* name,
                                      Object* object,
                                      JSObject* holder,
                                      JSFunction* function);
 
-  static Object* ComputeCallNormal(int argc, String* name, JSObject* receiver);
+  static Object* ComputeCallNormal(int argc,
+                                   InLoopFlag in_loop,
+                                   String* name,
+                                   JSObject* receiver);
 
   static Object* ComputeCallInterceptor(int argc,
                                         String* name,
                                         Object* object,
                                         JSObject* holder);
 
+  static Object* ComputeCallGlobal(int argc,
+                                   InLoopFlag in_loop,
+                                   String* name,
+                                   JSObject* receiver,
+                                   GlobalObject* holder,
+                                   JSGlobalPropertyCell* cell,
+                                   JSFunction* function);
+
   // ---
 
-  static Object* ComputeCallInitialize(int argc);
-  static Object* ComputeCallInitializeInLoop(int argc);
-  static Object* ComputeCallPreMonomorphic(int argc);
-  static Object* ComputeCallNormal(int argc);
-  static Object* ComputeCallMegamorphic(int argc);
+  static Object* ComputeCallInitialize(int argc, InLoopFlag in_loop);
+  static Object* ComputeCallPreMonomorphic(int argc, InLoopFlag in_loop);
+  static Object* ComputeCallNormal(int argc, InLoopFlag in_loop);
+  static Object* ComputeCallMegamorphic(int argc, InLoopFlag in_loop);
   static Object* ComputeCallMiss(int argc);
 
   // Finds the Code object stored in the Heap::non_monomorphic_cache().
-  static Code* FindCallInitialize(int argc);
+  static Code* FindCallInitialize(int argc, InLoopFlag in_loop);
 
+#ifdef ENABLE_DEBUGGER_SUPPORT
   static Object* ComputeCallDebugBreak(int argc);
   static Object* ComputeCallDebugPrepareStepIn(int argc);
+#endif
 
   static Object* ComputeLazyCompile(int argc);
 
@@ -173,11 +199,13 @@ class StubCache : public AllStatic {
   static void GenerateMiss(MacroAssembler* masm);
 
   // Generate code for probing the stub cache table.
+  // If extra != no_reg it might be used as am extra scratch register.
   static void GenerateProbe(MacroAssembler* masm,
                             Code::Flags flags,
                             Register receiver,
                             Register name,
-                            Register scratch);
+                            Register scratch,
+                            Register extra);
 
   enum Table {
     kPrimary,
@@ -201,23 +229,41 @@ class StubCache : public AllStatic {
     // Compute the hash of the name (use entire length field).
     ASSERT(name->HasHashCode());
     uint32_t field = name->length_field();
+    // Using only the low bits in 64-bit mode is unlikely to increase the
+    // risk of collision even if the heap is spread over an area larger than
+    // 4Gb (and not at all if it isn't).
+    uint32_t map_low32bits =
+        static_cast<uint32_t>(reinterpret_cast<uintptr_t>(map));
+    // We always set the in_loop bit to zero when generating the lookup code
+    // so do it here too so the hash codes match.
+    uint32_t iflags =
+        (static_cast<uint32_t>(flags) & ~Code::kFlagsNotUsedInLookup);
     // Base the offset on a simple combination of name, flags, and map.
-    uint32_t key = (reinterpret_cast<uint32_t>(map) + field) ^ flags;
+    uint32_t key = (map_low32bits + field) ^ iflags;
     return key & ((kPrimaryTableSize - 1) << kHeapObjectTagSize);
   }
 
   static int SecondaryOffset(String* name, Code::Flags flags, int seed) {
     // Use the seed from the primary cache in the secondary cache.
-    uint32_t key = seed - reinterpret_cast<uint32_t>(name) + flags;
+    uint32_t string_low32bits =
+        static_cast<uint32_t>(reinterpret_cast<uintptr_t>(name));
+    // We always set the in_loop bit to zero when generating the lookup code
+    // so do it here too so the hash codes match.
+    uint32_t iflags =
+        (static_cast<uint32_t>(flags) & ~Code::kFlagsICInLoopMask);
+    uint32_t key = seed - string_low32bits + iflags;
     return key & ((kSecondaryTableSize - 1) << kHeapObjectTagSize);
   }
 
   // Compute the entry for a given offset in exactly the same way as
-  // we done in generated code. This makes it a lot easier to avoid
-  // making mistakes in the hashed offset computations.
+  // we do in generated code.  We generate an hash code that already
+  // ends in String::kHashShift 0s.  Then we shift it so it is a multiple
+  // of sizeof(Entry).  This makes it easier to avoid making mistakes
+  // in the hashed offset computations.
   static Entry* entry(Entry* table, int offset) {
+    const int shift_amount = kPointerSizeLog2 + 1 - String::kHashShift;
     return reinterpret_cast<Entry*>(
-        reinterpret_cast<Address>(table) + (offset << 1));
+        reinterpret_cast<Address>(table) + (offset << shift_amount));
   }
 };
 
@@ -261,7 +307,9 @@ Object* StoreCallbackProperty(Arguments args);
 
 
 // Support functions for IC stubs for interceptors.
-Object* LoadInterceptorProperty(Arguments args);
+Object* LoadPropertyWithInterceptorOnly(Arguments args);
+Object* LoadPropertyWithInterceptorForLoad(Arguments args);
+Object* LoadPropertyWithInterceptorForCall(Arguments args);
 Object* StoreInterceptorProperty(Arguments args);
 Object* CallInterceptorProperty(Arguments args);
 
@@ -281,15 +329,17 @@ class StubCompiler BASE_EMBEDDED {
     JSARRAY_HAS_FAST_ELEMENTS_CHECK
   };
 
-  StubCompiler() : scope_(), masm_(NULL, 256) { }
+  StubCompiler() : scope_(), masm_(NULL, 256), failure_(NULL) { }
 
   Object* CompileCallInitialize(Code::Flags flags);
   Object* CompileCallPreMonomorphic(Code::Flags flags);
   Object* CompileCallNormal(Code::Flags flags);
   Object* CompileCallMegamorphic(Code::Flags flags);
   Object* CompileCallMiss(Code::Flags flags);
+#ifdef ENABLE_DEBUGGER_SUPPORT
   Object* CompileCallDebugBreak(Code::Flags flags);
   Object* CompileCallDebugPrepareStepIn(Code::Flags flags);
+#endif
   Object* CompileLazyCompile(Code::Flags flags);
 
   // Static functions for generating parts of stubs.
@@ -299,39 +349,7 @@ class StubCompiler BASE_EMBEDDED {
   static void GenerateFastPropertyLoad(MacroAssembler* masm,
                                        Register dst, Register src,
                                        JSObject* holder, int index);
-  static void GenerateLoadField(MacroAssembler* masm,
-                                JSObject* object,
-                                JSObject* holder,
-                                Register receiver,
-                                Register scratch1,
-                                Register scratch2,
-                                int index,
-                                Label* miss_label);
-  static void GenerateLoadCallback(MacroAssembler* masm,
-                                   JSObject* object,
-                                   JSObject* holder,
-                                   Register receiver,
-                                   Register name,
-                                   Register scratch1,
-                                   Register scratch2,
-                                   AccessorInfo* callback,
-                                   Label* miss_label);
-  static void GenerateLoadConstant(MacroAssembler* masm,
-                                   JSObject* object,
-                                   JSObject* holder,
-                                   Register receiver,
-                                   Register scratch1,
-                                   Register scratch2,
-                                   Object* value,
-                                   Label* miss_label);
-  static void GenerateLoadInterceptor(MacroAssembler* masm,
-                                      JSObject* object,
-                                      JSObject* holder,
-                                      Register receiver,
-                                      Register name,
-                                      Register scratch1,
-                                      Register scratch2,
-                                      Label* miss_label);
+
   static void GenerateLoadArrayLength(MacroAssembler* masm,
                                       Register receiver,
                                       Register scratch,
@@ -361,15 +379,65 @@ class StubCompiler BASE_EMBEDDED {
                                  Label* miss_label);
   static void GenerateLoadMiss(MacroAssembler* masm, Code::Kind kind);
 
+  // Check the integrity of the prototype chain to make sure that the
+  // current IC is still valid.
+  Register CheckPrototypes(JSObject* object,
+                           Register object_reg,
+                           JSObject* holder,
+                           Register holder_reg,
+                           Register scratch,
+                           String* name,
+                           Label* miss);
+
  protected:
   Object* GetCodeWithFlags(Code::Flags flags, const char* name);
   Object* GetCodeWithFlags(Code::Flags flags, String* name);
 
   MacroAssembler* masm() { return &masm_; }
+  void set_failure(Failure* failure) { failure_ = failure; }
+
+  void GenerateLoadField(JSObject* object,
+                         JSObject* holder,
+                         Register receiver,
+                         Register scratch1,
+                         Register scratch2,
+                         int index,
+                         String* name,
+                         Label* miss);
+
+  void GenerateLoadCallback(JSObject* object,
+                            JSObject* holder,
+                            Register receiver,
+                            Register name_reg,
+                            Register scratch1,
+                            Register scratch2,
+                            AccessorInfo* callback,
+                            String* name,
+                            Label* miss);
+
+  void GenerateLoadConstant(JSObject* object,
+                            JSObject* holder,
+                            Register receiver,
+                            Register scratch1,
+                            Register scratch2,
+                            Object* value,
+                            String* name,
+                            Label* miss);
+
+  void GenerateLoadInterceptor(JSObject* object,
+                               JSObject* holder,
+                               LookupResult* lookup,
+                               Register receiver,
+                               Register name_reg,
+                               Register scratch1,
+                               Register scratch2,
+                               String* name,
+                               Label* miss);
 
  private:
   HandleScope scope_;
   MacroAssembler masm_;
+  Failure* failure_;
 };
 
 
@@ -390,6 +458,12 @@ class LoadStubCompiler: public StubCompiler {
   Object* CompileLoadInterceptor(JSObject* object,
                                  JSObject* holder,
                                  String* name);
+
+  Object* CompileLoadGlobal(JSObject* object,
+                            GlobalObject* holder,
+                            JSGlobalPropertyCell* cell,
+                            String* name,
+                            bool is_dont_delete);
 
  private:
   Object* GetCode(PropertyType type, String* name);
@@ -432,6 +506,10 @@ class StoreStubCompiler: public StubCompiler {
                                AccessorInfo* callbacks,
                                String* name);
   Object* CompileStoreInterceptor(JSObject* object, String* name);
+  Object* CompileStoreGlobal(GlobalObject* object,
+                             JSGlobalPropertyCell* holder,
+                             String* name);
+
 
  private:
   Object* GetCode(PropertyType type, String* name);
@@ -452,7 +530,8 @@ class KeyedStoreStubCompiler: public StubCompiler {
 
 class CallStubCompiler: public StubCompiler {
  public:
-  explicit CallStubCompiler(int argc) : arguments_(argc) { }
+  explicit CallStubCompiler(int argc, InLoopFlag in_loop)
+      : arguments_(argc), in_loop_(in_loop) { }
 
   Object* CompileCallField(Object* object,
                            JSObject* holder,
@@ -461,17 +540,35 @@ class CallStubCompiler: public StubCompiler {
   Object* CompileCallConstant(Object* object,
                               JSObject* holder,
                               JSFunction* function,
+                              String* name,
                               CheckType check);
   Object* CompileCallInterceptor(Object* object,
                                  JSObject* holder,
                                  String* name);
+  Object* CompileCallGlobal(JSObject* object,
+                            GlobalObject* holder,
+                            JSGlobalPropertyCell* cell,
+                            JSFunction* function,
+                            String* name);
 
  private:
   const ParameterCount arguments_;
+  const InLoopFlag in_loop_;
 
   const ParameterCount& arguments() { return arguments_; }
 
   Object* GetCode(PropertyType type, String* name);
+};
+
+
+class ConstructStubCompiler: public StubCompiler {
+ public:
+  explicit ConstructStubCompiler() {}
+
+  Object* CompileConstructStub(SharedFunctionInfo* shared);
+
+ private:
+  Object* GetCode();
 };
 
 

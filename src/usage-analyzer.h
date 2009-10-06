@@ -25,10 +25,11 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-#ifndef V8_USAGE_ANALYSER_H_
-#define V8_USAGE_ANALYSER_H_
+#ifndef V8_USAGE_ANALYZER_H_
+#define V8_USAGE_ANALYZER_H_
 
-namespace v8 { namespace internal {
+namespace v8 {
+namespace internal {
 
 // Compute usage counts for all variables.
 // Used for variable allocation.
@@ -36,4 +37,4 @@ bool AnalyzeVariableUsage(FunctionLiteral* lit);
 
 } }  // namespace v8::internal
 
-#endif  // V8_USAGE_ANALYSER_H_
+#endif  // V8_USAGE_ANALYZER_H_

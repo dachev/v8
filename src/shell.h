@@ -27,9 +27,13 @@
 //
 // A simple interactive shell.  Enable with --shell.
 
+#ifndef V8_SHELL_H_
+#define V8_SHELL_H_
+
 #include "../public/debug.h"
 
-namespace v8 { namespace internal {
+namespace v8 {
+namespace internal {
 
 // Debug event handler for interactive debugging.
 void handle_debug_event(v8::DebugEvent event,
@@ -47,3 +51,5 @@ class Shell {
 };
 
 } }  // namespace v8::internal
+
+#endif  // V8_SHELL_H_

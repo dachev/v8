@@ -31,7 +31,8 @@
 #include "scanner.h"
 #include "allocation.h"
 
-namespace v8 { namespace internal {
+namespace v8 {
+namespace internal {
 
 
 class ParserMessage : public Malloced {
@@ -142,7 +143,8 @@ FunctionLiteral* MakeAST(bool compile_in_global_context,
                          ScriptDataImpl* pre_data);
 
 
-ScriptDataImpl* PreParse(unibrow::CharacterStream* stream,
+ScriptDataImpl* PreParse(Handle<String> source,
+                         unibrow::CharacterStream* stream,
                          v8::Extension* extension);
 
 

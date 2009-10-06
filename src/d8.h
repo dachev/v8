@@ -42,11 +42,16 @@ namespace i = v8::internal;
 class Counter {
  public:
   static const int kMaxNameSize = 64;
-  int32_t* Bind(const char* name);
-  int32_t* ptr() { return &counter_; }
-  int32_t value() { return counter_; }
+  int32_t* Bind(const char* name, bool histogram);
+  int32_t* ptr() { return &count_; }
+  int32_t count() { return count_; }
+  int32_t sample_total() { return sample_total_; }
+  bool is_histogram() { return is_histogram_; }
+  void AddSample(int32_t sample);
  private:
-  int32_t counter_;
+  int32_t count_;
+  int32_t sample_total_;
+  bool is_histogram_;
   uint8_t name_[kMaxNameSize];
 };
 
@@ -116,19 +121,29 @@ class Shell: public i::AllStatic {
   static void Initialize();
   static void OnExit();
   static int* LookupCounter(const char* name);
+  static void* CreateHistogram(const char* name,
+                               int min,
+                               int max,
+                               size_t buckets);
+  static void AddHistogramSample(void* histogram, int sample);
   static void MapCounters(const char* name);
   static Handle<String> ReadFile(const char* name);
   static void RunShell();
   static int Main(int argc, char* argv[]);
   static Handle<Array> GetCompletions(Handle<String> text,
                                       Handle<String> full);
+#ifdef ENABLE_DEBUGGER_SUPPORT
   static Handle<Object> DebugMessageDetails(Handle<String> message);
   static Handle<Value> DebugCommandToJSONRequest(Handle<String> command);
+#endif
 
   static Handle<Value> Print(const Arguments& args);
+  static Handle<Value> Write(const Arguments& args);
   static Handle<Value> Yield(const Arguments& args);
   static Handle<Value> Quit(const Arguments& args);
   static Handle<Value> Version(const Arguments& args);
+  static Handle<Value> Read(const Arguments& args);
+  static Handle<Value> ReadLine(const Arguments& args);
   static Handle<Value> Load(const Arguments& args);
   // The OS object on the global object contains methods for performing
   // operating system calls:
@@ -179,6 +194,7 @@ class Shell: public i::AllStatic {
   static CounterCollection local_counters_;
   static CounterCollection* counters_;
   static i::OS::MemoryMappedFile* counters_file_;
+  static Counter* GetCounter(const char* name, bool is_histogram);
 };
 
 

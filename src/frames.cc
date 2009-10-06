@@ -34,7 +34,8 @@
 #include "top.h"
 #include "zone-inl.h"
 
-namespace v8 { namespace internal {
+namespace v8 {
+namespace internal {
 
 // Iterator that supports traversing the stack handlers of a
 // particular frame. Needs to know the top of the handler chain.
@@ -48,7 +49,9 @@ class StackHandlerIterator BASE_EMBEDDED {
 
   StackHandler* handler() const { return handler_; }
 
-  bool done() { return handler_->address() > limit_; }
+  bool done() {
+    return handler_ == NULL || handler_->address() > limit_;
+  }
   void Advance() {
     ASSERT(!done());
     handler_ = handler_->next();
@@ -86,6 +89,7 @@ StackFrameIterator::StackFrameIterator(bool use_top, Address fp, Address sp)
   if (use_top || fp != NULL) {
     Reset();
   }
+  JavaScriptFrame_.DisableHeapAccess();
 }
 
 #undef INITIALIZE_SINGLETON
@@ -208,7 +212,9 @@ void SafeStackFrameIterator::Advance() {
   StackFrame* last_frame = iterator_.frame();
   Address last_sp = last_frame->sp(), last_fp = last_frame->fp();
   // Before advancing to the next stack frame, perform pointer validity tests
-  iteration_done_ = !IsValidFrame(last_frame) || !IsValidCaller(last_frame);
+  iteration_done_ = !IsValidFrame(last_frame) ||
+      !CanIterateHandles(last_frame, iterator_.handler()) ||
+      !IsValidCaller(last_frame);
   if (iteration_done_) return;
 
   iterator_.Advance();
@@ -219,12 +225,17 @@ void SafeStackFrameIterator::Advance() {
 }
 
 
+bool SafeStackFrameIterator::CanIterateHandles(StackFrame* frame,
+                                               StackHandler* handler) {
+  // If StackIterator iterates over StackHandles, verify that
+  // StackHandlerIterator can be instantiated (see StackHandlerIterator
+  // constructor.)
+  return !is_valid_top_ || (frame->sp() <= handler->address());
+}
+
+
 bool SafeStackFrameIterator::IsValidFrame(StackFrame* frame) const {
-  return IsValidStackAddress(frame->sp()) && IsValidStackAddress(frame->fp()) &&
-      // JavaScriptFrame uses function shared info to advance, hence it must
-      // point to a valid function object.
-      (!frame->is_java_script() ||
-       reinterpret_cast<JavaScriptFrame*>(frame)->is_at_function());
+  return IsValidStackAddress(frame->sp()) && IsValidStackAddress(frame->fp());
 }
 
 
@@ -270,7 +281,7 @@ void SafeStackFrameIterator::Reset() {
 SafeStackTraceFrameIterator::SafeStackTraceFrameIterator(
     Address fp, Address sp, Address low_bound, Address high_bound) :
     SafeJavaScriptFrameIterator(fp, sp, low_bound, high_bound) {
-  if (!done() && !frame()->is_at_function()) Advance();
+  if (!done() && !frame()->is_java_script()) Advance();
 }
 
 
@@ -278,7 +289,7 @@ void SafeStackTraceFrameIterator::Advance() {
   while (true) {
     SafeJavaScriptFrameIterator::Advance();
     if (done()) return;
-    if (frame()->is_at_function()) return;
+    if (frame()->is_java_script()) return;
   }
 }
 #endif
@@ -389,7 +400,7 @@ Code* ExitFrame::code() const {
 
 void ExitFrame::ComputeCallerState(State* state) const {
   // Setup the caller state.
-  state->sp = pp();
+  state->sp = caller_sp();
   state->fp = Memory::Address_at(fp() + ExitFrameConstants::kCallerFPOffset);
   state->pc_address
       = reinterpret_cast<Address*>(fp() + ExitFrameConstants::kCallerPCOffset);
@@ -397,7 +408,7 @@ void ExitFrame::ComputeCallerState(State* state) const {
 
 
 Address ExitFrame::GetCallerStackPointer() const {
-  return fp() + ExitFrameConstants::kPPDisplacement;
+  return fp() + ExitFrameConstants::kCallerSPDisplacement;
 }
 
 
@@ -442,12 +453,12 @@ bool StandardFrame::IsExpressionInsideHandler(int n) const {
 Object* JavaScriptFrame::GetParameter(int index) const {
   ASSERT(index >= 0 && index < ComputeParametersCount());
   const int offset = JavaScriptFrameConstants::kParam0Offset;
-  return Memory::Object_at(pp() + offset - (index * kPointerSize));
+  return Memory::Object_at(caller_sp() + offset - (index * kPointerSize));
 }
 
 
 int JavaScriptFrame::ComputeParametersCount() const {
-  Address base  = pp() + JavaScriptFrameConstants::kReceiverOffset;
+  Address base  = caller_sp() + JavaScriptFrameConstants::kReceiverOffset;
   Address limit = fp() + JavaScriptFrameConstants::kSavedRegistersOffset;
   return (base - limit) / kPointerSize;
 }
@@ -639,10 +650,10 @@ void EntryFrame::Iterate(ObjectVisitor* v) const {
   handler->Iterate(v);
   // Make sure that there's the entry frame does not contain more than
   // one stack handler.
-  if (kDebug) {
-    it.Advance();
-    ASSERT(it.done());
-  }
+#ifdef DEBUG
+  it.Advance();
+  ASSERT(it.done());
+#endif
 }
 
 
@@ -672,7 +683,7 @@ void JavaScriptFrame::Iterate(ObjectVisitor* v) const {
   const int kBaseOffset = JavaScriptFrameConstants::kSavedRegistersOffset;
   const int kLimitOffset = JavaScriptFrameConstants::kReceiverOffset;
   Object** base = &Memory::Object_at(fp() + kBaseOffset);
-  Object** limit = &Memory::Object_at(pp() + kLimitOffset) + 1;
+  Object** limit = &Memory::Object_at(caller_sp() + kLimitOffset) + 1;
   v->VisitPointers(base, limit);
 }
 

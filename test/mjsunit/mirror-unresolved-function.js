@@ -42,8 +42,9 @@ MirrorRefCache.prototype.lookup = function(handle) {
 
 var mirror = new debug.UnresolvedFunctionMirror("f");
 var serializer = debug.MakeMirrorSerializer();
-var json = serializer.serializeValue(mirror);
-var refs = new MirrorRefCache(serializer.serializeReferencedObjects());
+var json = JSON.stringify(serializer.serializeValue(mirror));
+var refs = new MirrorRefCache(
+    JSON.stringify(serializer.serializeReferencedObjects()));
 
 // Check the mirror hierachy for unresolved functions.
 assertTrue(mirror instanceof debug.Mirror);
@@ -57,6 +58,7 @@ assertEquals('function', mirror.type());
 assertFalse(mirror.isPrimitive());
 assertEquals("Function", mirror.className());
 assertEquals("f", mirror.name());
+assertEquals('undefined', typeof mirror.inferredName());
 assertFalse(mirror.resolved());
 assertEquals(void 0, mirror.source());
 assertEquals('undefined', mirror.constructorFunction().type());
@@ -75,4 +77,5 @@ assertEquals(mirror.prototypeObject().handle(), fromJSON.prototypeObject.ref, 'U
 assertEquals('undefined', refs.lookup(fromJSON.prototypeObject.ref).type, 'Unexpected prototype object type in JSON');
 assertFalse(fromJSON.resolved);
 assertEquals("f", fromJSON.name);
+assertFalse('inferredName' in fromJSON);
 assertEquals(void 0, fromJSON.source);

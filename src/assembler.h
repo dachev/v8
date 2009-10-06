@@ -30,7 +30,7 @@
 
 // The original source code covered by the above license above has been
 // modified significantly by Google Inc.
-// Copyright 2006-2008 the V8 project authors. All rights reserved.
+// Copyright 2006-2009 the V8 project authors. All rights reserved.
 
 #ifndef V8_ASSEMBLER_H_
 #define V8_ASSEMBLER_H_
@@ -38,8 +38,10 @@
 #include "runtime.h"
 #include "top.h"
 #include "zone-inl.h"
+#include "token.h"
 
-namespace v8 { namespace internal {
+namespace v8 {
+namespace internal {
 
 
 // -----------------------------------------------------------------------------
@@ -181,7 +183,7 @@ class RelocInfo BASE_EMBEDDED {
   intptr_t data() const  { return data_; }
 
   // Apply a relocation by delta bytes
-  INLINE(void apply(int delta));
+  INLINE(void apply(intptr_t delta));
 
   // Read/modify the code target in the branch/call instruction
   // this relocation applies to;
@@ -214,6 +216,9 @@ class RelocInfo BASE_EMBEDDED {
 
   // Patch the code with a call.
   void PatchCodeWithCall(Address target, int guard_bytes);
+  // Check whether the current instruction is currently a call
+  // sequence (whether naturally or a return sequence overwritten
+  // to enter the debugger).
   INLINE(bool IsCallInstruction());
 
 #ifdef ENABLE_DISASSEMBLER
@@ -263,15 +268,19 @@ class RelocInfoWriter BASE_EMBEDDED {
     last_pc_ = pc;
   }
 
-  // Max size (bytes) of a written RelocInfo.
-  static const int kMaxSize = 12;
+  // Max size (bytes) of a written RelocInfo. Longest encoding is
+  // ExtraTag, VariableLengthPCJump, ExtraTag, pc_delta, ExtraTag, data_delta.
+  // On ia32 and arm this is 1 + 4 + 1 + 1 + 1 + 4 = 12.
+  // On x64 this is 1 + 4 + 1 + 1 + 1 + 8 == 16;
+  // Here we use the maximum of the two.
+  static const int kMaxSize = 16;
 
  private:
   inline uint32_t WriteVariableLengthPCJump(uint32_t pc_delta);
   inline void WriteTaggedPC(uint32_t pc_delta, int tag);
   inline void WriteExtraTaggedPC(uint32_t pc_delta, int extra_tag);
-  inline void WriteExtraTaggedData(int32_t data_delta, int top_tag);
-  inline void WriteTaggedData(int32_t data_delta, int tag);
+  inline void WriteExtraTaggedData(intptr_t data_delta, int top_tag);
+  inline void WriteTaggedData(intptr_t data_delta, int tag);
   inline void WriteExtraTag(int extra_tag, int top_tag);
 
   byte* pos_;
@@ -340,34 +349,25 @@ class RelocIterator: public Malloced {
 };
 
 
-// A stack-allocated code region logs a name for the code generated
-// while the region is in effect.  This information is used by the
-// profiler to categorize ticks within generated code.
-class CodeRegion BASE_EMBEDDED {
- public:
-  inline CodeRegion(Assembler* assm, const char *name) : assm_(assm) {
-    LOG(BeginCodeRegionEvent(this, assm, name));
-  }
-  inline ~CodeRegion() {
-    LOG(EndCodeRegionEvent(this, assm_));
-  }
- private:
-  Assembler* assm_;
-};
-
-
 //------------------------------------------------------------------------------
 // External function
 
 //----------------------------------------------------------------------------
 class IC_Utility;
-class Debug_Address;
 class SCTableReference;
+#ifdef ENABLE_DEBUGGER_SUPPORT
+class Debug_Address;
+#endif
 
-// An ExternalReference represents a C++ address called from the generated
-// code. All references to C++ functions and must be encapsulated in an
-// ExternalReference instance. This is done in order to track the origin of
-// all external references in the code.
+
+typedef void* ExternalReferenceRedirector(void* original, bool fp_return);
+
+
+// An ExternalReference represents a C++ address used in the generated
+// code. All references to C++ functions and variables must be encapsulated in
+// an ExternalReference instance. This is done in order to track the origin of
+// all external references in the code so that they can be bound to the correct
+// addresses when deserializing a heap.
 class ExternalReference BASE_EMBEDDED {
  public:
   explicit ExternalReference(Builtins::CFunctionId id);
@@ -380,7 +380,9 @@ class ExternalReference BASE_EMBEDDED {
 
   explicit ExternalReference(const IC_Utility& ic_utility);
 
+#ifdef ENABLE_DEBUGGER_SUPPORT
   explicit ExternalReference(const Debug_Address& debug_address);
+#endif
 
   explicit ExternalReference(StatsCounter* counter);
 
@@ -392,19 +394,21 @@ class ExternalReference BASE_EMBEDDED {
   // pattern. This means that they have to be added to the
   // ExternalReferenceTable in serialize.cc manually.
 
+  static ExternalReference perform_gc_function();
   static ExternalReference builtin_passed_function();
+  static ExternalReference random_positive_smi_function();
 
   // Static variable Factory::the_hole_value.location()
   static ExternalReference the_hole_value_location();
+
+  // Static variable Heap::roots_address()
+  static ExternalReference roots_address();
 
   // Static variable StackGuard::address_of_jslimit()
   static ExternalReference address_of_stack_guard_limit();
 
   // Static variable RegExpStack::limit_address()
   static ExternalReference address_of_regexp_stack_limit();
-
-  // Function Debug::Break()
-  static ExternalReference debug_break();
 
   // Static variable Heap::NewSpaceStart()
   static ExternalReference new_space_start();
@@ -414,23 +418,48 @@ class ExternalReference BASE_EMBEDDED {
   static ExternalReference new_space_allocation_top_address();
   static ExternalReference new_space_allocation_limit_address();
 
+  static ExternalReference double_fp_operation(Token::Value operation);
+  static ExternalReference compare_doubles();
+
+  Address address() const {return reinterpret_cast<Address>(address_);}
+
+#ifdef ENABLE_DEBUGGER_SUPPORT
+  // Function Debug::Break()
+  static ExternalReference debug_break();
+
   // Used to check if single stepping is enabled in generated code.
   static ExternalReference debug_step_in_fp_address();
+#endif
 
-  Address address() const {return address_;}
+  // This lets you register a function that rewrites all external references.
+  // Used by the ARM simulator to catch calls to external references.
+  static void set_redirector(ExternalReferenceRedirector* redirector) {
+    ASSERT(redirector_ == NULL);  // We can't stack them.
+    redirector_ = redirector;
+  }
 
  private:
   explicit ExternalReference(void* address)
-    : address_(reinterpret_cast<Address>(address)) {}
+      : address_(address) {}
 
-  Address address_;
+  static ExternalReferenceRedirector* redirector_;
+
+  static void* Redirect(void* address, bool fp_return = false) {
+    if (redirector_ == NULL) return address;
+    return (*redirector_)(address, fp_return);
+  }
+
+  static void* Redirect(Address address_arg, bool fp_return = false) {
+    void* address = reinterpret_cast<void*>(address_arg);
+    return redirector_ == NULL ? address : (*redirector_)(address, fp_return);
+  }
+
+  void* address_;
 };
 
 
 // -----------------------------------------------------------------------------
 // Utility functions
-
-// Move these into inline file?
 
 static inline bool is_intn(int x, int n)  {
   return -(1 << (n-1)) <= x && x < (1 << (n-1));
@@ -443,9 +472,11 @@ static inline bool is_uintn(int x, int n) {
   return (x & -(1 << n)) == 0;
 }
 
+static inline bool is_uint2(int x)  { return is_uintn(x, 2); }
 static inline bool is_uint3(int x)  { return is_uintn(x, 3); }
 static inline bool is_uint4(int x)  { return is_uintn(x, 4); }
 static inline bool is_uint5(int x)  { return is_uintn(x, 5); }
+static inline bool is_uint6(int x)  { return is_uintn(x, 6); }
 static inline bool is_uint8(int x)  { return is_uintn(x, 8); }
 static inline bool is_uint12(int x)  { return is_uintn(x, 12); }
 static inline bool is_uint16(int x)  { return is_uintn(x, 16); }

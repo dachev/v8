@@ -51,6 +51,11 @@
 #error both DEBUG and NDEBUG are set
 #endif
 
+// Enable debugger support by default, unless it is in ANDROID
+#if !defined(ENABLE_DEBUGGER_SUPPORT) && !defined(ANDROID)
+#define ENABLE_DEBUGGER_SUPPORT
+#endif
+
 // Basic includes
 #include "../include/v8.h"
 #include "globals.h"
@@ -66,27 +71,47 @@
 #include "objects-inl.h"
 #include "spaces-inl.h"
 #include "heap-inl.h"
+#include "log-inl.h"
 #include "messages.h"
 
-namespace v8 { namespace internal {
+namespace v8 {
+namespace internal {
 
 class V8 : public AllStatic {
  public:
   // Global actions.
 
-  // If Initialize is called with des == NULL, the
-  // initial state is created from scratch. If a non-null Deserializer
-  // is given, the initial state is created by reading the
-  // deserialized data into an empty heap.
+  // If Initialize is called with des == NULL, the initial state is
+  // created from scratch. If a non-null Deserializer is given, the
+  // initial state is created by reading the deserialized data into an
+  // empty heap.
   static bool Initialize(Deserializer* des);
   static void TearDown();
-  static bool HasBeenSetup() { return has_been_setup_; }
-  static bool HasBeenDisposed() { return has_been_disposed_; }
+  static bool IsRunning() { return is_running_; }
+  // To be dead you have to have lived
+  static bool IsDead() { return has_fatal_error_ || has_been_disposed_; }
+  static void SetFatalError();
 
   // Report process out of memory. Implementation found in api.cc.
   static void FatalProcessOutOfMemory(const char* location);
+
+  // Random number generation support. Not cryptographically safe.
+  static uint32_t Random();
+  static Smi* RandomPositiveSmi();
+
+  // Idle notification directly from the API.
+  static bool IdleNotification(bool is_high_priority);
+
  private:
+  // True if engine is currently running
+  static bool is_running_;
+  // True if V8 has ever been run
   static bool has_been_setup_;
+  // True if error has been signaled for current engine
+  // (reset to false if engine is restarted)
+  static bool has_fatal_error_;
+  // True if engine has been shut down
+  // (reset if engine is restarted)
   static bool has_been_disposed_;
 };
 

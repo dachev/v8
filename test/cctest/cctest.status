@@ -27,11 +27,12 @@
 
 prefix cctest
 
-# BUG(96): Fix this flaky test.
-test-debug/ThreadedDebugging: PASS || FAIL
-
 # BUG(281): This test fails on some Linuxes.
 test-debug/DebuggerAgent: PASS, (PASS || FAIL) if $system == linux
+
+# BUG(382): Weird test. Can't guarantee that it never times out.
+test-api/ApplyInterruption: PASS || TIMEOUT
+
 
 [ $arch == arm ]
 
@@ -43,8 +44,19 @@ test-spaces/LargeObjectSpace: PASS || FAIL
 # BUG(240): Test seems flaky on ARM.
 test-api/RegExpInterruption: SKIP
 
+# We cannot assume that we can throw OutOfMemory exceptions in all situations.
+# Apparently our ARM box is in such a state. Skip the test as it also runs for
+# a long time.
+test-api/OutOfMemory: SKIP
+test-api/OutOfMemoryNested: SKIP
+
+# BUG(355): Test crashes on ARM.
+test-log/ProfLazyMode: SKIP
+
+[ $simulator == arm ]
+
 # BUG(271): During exception propagation, we compare pointers into the
 # stack.  These tests fail on the ARM simulator because the C++ and
 # the JavaScript stacks are separate.
-test-api/ExceptionOrder: PASS || FAIL
-test-api/TryCatchInTryFinally: PASS || FAIL
+test-api/ExceptionOrder: FAIL
+test-api/TryCatchInTryFinally: FAIL

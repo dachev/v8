@@ -1,4 +1,4 @@
-// Copyright 2006-2008 the V8 project authors. All rights reserved.
+// Copyright 2006-2009 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -30,25 +30,29 @@
 
 #include "assembler.h"
 
-namespace v8 { namespace internal {
+namespace v8 {
+namespace internal {
 
 // IC_UTIL_LIST defines all utility functions called from generated
 // inline caching code. The argument for the macro, ICU, is the function name.
-#define IC_UTIL_LIST(ICU)          \
-  ICU(LoadIC_Miss)                 \
-  ICU(KeyedLoadIC_Miss)            \
-  ICU(CallIC_Miss)                 \
-  ICU(StoreIC_Miss)                \
-  ICU(SharedStoreIC_ExtendStorage) \
-  ICU(KeyedStoreIC_Miss)           \
-  /* Utilities for IC stubs. */    \
-  ICU(LoadCallbackProperty)        \
-  ICU(StoreCallbackProperty)       \
-  ICU(LoadInterceptorProperty)     \
+#define IC_UTIL_LIST(ICU)                             \
+  ICU(LoadIC_Miss)                                    \
+  ICU(KeyedLoadIC_Miss)                               \
+  ICU(CallIC_Miss)                                    \
+  ICU(StoreIC_Miss)                                   \
+  ICU(SharedStoreIC_ExtendStorage)                    \
+  ICU(KeyedStoreIC_Miss)                              \
+  /* Utilities for IC stubs. */                       \
+  ICU(LoadCallbackProperty)                           \
+  ICU(StoreCallbackProperty)                          \
+  ICU(LoadPropertyWithInterceptorOnly)                \
+  ICU(LoadPropertyWithInterceptorForLoad)             \
+  ICU(LoadPropertyWithInterceptorForCall)             \
   ICU(StoreInterceptorProperty)
 
 //
-// IC is the base class for LoadIC, StoreIC and CallIC.
+// IC is the base class for LoadIC, StoreIC, CallIC, KeyedLoadIC,
+// and KeyedStoreIC.
 //
 class IC {
  public:
@@ -107,9 +111,11 @@ class IC {
   Address fp() const { return fp_; }
   Address pc() const { return *pc_address_; }
 
+#ifdef ENABLE_DEBUGGER_SUPPORT
   // Computes the address in the original code when the code running is
   // containing break points (calls to DebugBreakXXX builtins).
   Address OriginalCodeAddress();
+#endif
 
   // Set the call-site target.
   void set_target(Code* code) { SetTargetAtAddress(address(), code); }
@@ -118,7 +124,8 @@ class IC {
   static void TraceIC(const char* type,
                       Handle<String> name,
                       State old_state,
-                      Code* new_target);
+                      Code* new_target,
+                      const char* extra_info = "");
 #endif
 
   static Failure* TypeError(const char* type,
@@ -169,7 +176,6 @@ class CallIC: public IC {
 
   // Code generator routines.
   static void GenerateInitialize(MacroAssembler* masm, int argc);
-  static void GeneratePreMonomorphic(MacroAssembler* masm, int argc);
   static void GenerateMiss(MacroAssembler* masm, int argc);
   static void GenerateMegamorphic(MacroAssembler* masm, int argc);
   static void GenerateNormal(MacroAssembler* masm, int argc);
@@ -214,6 +220,11 @@ class LoadIC: public IC {
   static void GenerateStringLength(MacroAssembler* masm);
   static void GenerateFunctionPrototype(MacroAssembler* masm);
 
+  // The offset from the inlined patch site to the start of the
+  // inlined load instruction.  It is architecture-dependent, and not
+  // used on ARM.
+  static const int kOffsetToLoadInstruction;
+
  private:
   static void Generate(MacroAssembler* masm, const ExternalReference& f);
 
@@ -236,6 +247,12 @@ class LoadIC: public IC {
   }
 
   static void Clear(Address address, Code* target);
+
+  // Clear the use of the inlined version.
+  static void ClearInlinedVersion(Address address);
+
+  static bool PatchInlinedLoad(Address address, Object* map, int index);
+
   friend class IC;
 };
 
@@ -251,6 +268,9 @@ class KeyedLoadIC: public IC {
   static void GenerateInitialize(MacroAssembler* masm);
   static void GeneratePreMonomorphic(MacroAssembler* masm);
   static void GenerateGeneric(MacroAssembler* masm);
+
+  // Clear the use of the inlined version.
+  static void ClearInlinedVersion(Address address);
 
  private:
   static void Generate(MacroAssembler* masm, const ExternalReference& f);
@@ -279,7 +299,7 @@ class KeyedLoadIC: public IC {
 
   // Support for patching the map that is checked in an inlined
   // version of keyed load.
-  static void PatchInlinedMapCheck(Address address, Object* map);
+  static bool PatchInlinedLoad(Address address, Object* map);
 
   friend class IC;
 };
@@ -338,6 +358,12 @@ class KeyedStoreIC: public IC {
   static void GenerateGeneric(MacroAssembler* masm);
   static void GenerateExtendStorage(MacroAssembler* masm);
 
+  // Clear the inlined version so the IC is always hit.
+  static void ClearInlinedVersion(Address address);
+
+  // Restore the inlined version so the fast case can get hit.
+  static void RestoreInlinedVersion(Address address);
+
  private:
   static void Generate(MacroAssembler* masm, const ExternalReference& f);
 
@@ -360,6 +386,15 @@ class KeyedStoreIC: public IC {
   }
 
   static void Clear(Address address, Code* target);
+
+  // Support for patching the map that is checked in an inlined
+  // version of keyed store.
+  // The address is the patch point for the IC call
+  // (Assembler::kPatchReturnSequenceLength before the end of
+  // the call/return address).
+  // The map is the new map that the inlined code should check against.
+  static bool PatchInlinedStore(Address address, Object* map);
+
   friend class IC;
 };
 

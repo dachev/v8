@@ -28,92 +28,36 @@
 
 // -------------------------------------------------------------------
 
-const kVowelSounds = {a: true, e: true, i: true, o: true, u: true, y: true};
-const kCapitalVowelSounds = {a: true, e: true, i: true, o: true, u: true,
-    h: true, f: true, l: true, m: true, n: true, r: true, s: true, x: true,
-    y: true};
+// Lazily initialized.
+var kVowelSounds = 0;
+var kCapitalVowelSounds = 0;
+
 
 function GetInstanceName(cons) {
   if (cons.length == 0) {
     return "";
   }
-  var first = cons.charAt(0).toLowerCase();
-  var mapping = kVowelSounds;
-  if (cons.length > 1 && (cons.charAt(0) != first)) {
-    // First char is upper case
-    var second = cons.charAt(1).toLowerCase();
-    // Second char is upper case
-    if (cons.charAt(1) != second)
-      mapping = kCapitalVowelSounds;
+  var first = %StringToLowerCase(StringCharAt.call(cons, 0));
+  if (kVowelSounds === 0) {
+    kVowelSounds = {a: true, e: true, i: true, o: true, u: true, y: true};
+    kCapitalVowelSounds = {a: true, e: true, i: true, o: true, u: true, h: true,
+        f: true, l: true, m: true, n: true, r: true, s: true, x: true, y: true};
   }
-  var s = mapping[first] ? "an " : "a ";
+  var vowel_mapping = kVowelSounds;
+  if (cons.length > 1 && (StringCharAt.call(cons, 0) != first)) {
+    // First char is upper case
+    var second = %StringToLowerCase(StringCharAt.call(cons, 1));
+    // Second char is upper case
+    if (StringCharAt.call(cons, 1) != second) {
+      vowel_mapping = kCapitalVowelSounds;
+    }
+  }
+  var s = vowel_mapping[first] ? "an " : "a ";
   return s + cons;
 }
 
 
-const kMessages = {
-  // Error
-  cyclic_proto:                 "Cyclic __proto__ value",
-  // TypeError
-  unexpected_token:             "Unexpected token %0",
-  unexpected_token_number:      "Unexpected number",
-  unexpected_token_string:      "Unexpected string",
-  unexpected_token_identifier:  "Unexpected identifier",
-  unexpected_eos:               "Unexpected end of input",
-  expected_label:               "Expected label",
-  malformed_regexp:             "Invalid regular expression: /%0/: %1",
-  unterminated_regexp:          "Invalid regular expression: missing /",
-  pcre_error:                   "PCRE function %0, error code %1",
-  regexp_flags:                 "Cannot supply flags when constructing one RegExp from another",
-  invalid_lhs_in_assignment:    "Invalid left-hand side in assignment",
-  invalid_lhs_in_for_in:        "Invalid left-hand side in for-in",
-  invalid_lhs_in_postfix_op:    "Invalid left-hand side expression in postfix operation",
-  invalid_lhs_in_prefix_op:     "Invalid left-hand side expression in prefix operation",
-  multiple_defaults_in_switch:  "More than one default clause in switch statement",
-  newline_after_throw:          "Illegal newline after throw",
-  redeclaration:                "%0 '%1' has already been declared",
-  no_catch_or_finally:          "Missing catch or finally after try",
-  unknown_label:                "Undefined label '%0'",
-  invalid_break:                "Invalid break statement",
-  invalid_continue:             "Invalid continue statement",
-  uncaught_exception:           "Uncaught %0",
-  stack_trace:                  "Stack Trace:\n%0",
-  called_non_callable:          "%0 is not a function",
-  undefined_method:             "Object %1 has no method '%0'",
-  property_not_function:        "Property '%0' of object %1 is not a function",
-  null_or_undefined:            "Cannot access property of null or undefined",
-  cannot_convert_to_primitive:  "Cannot convert object to primitive value",
-  not_constructor:              "%0 is not a constructor",
-  not_defined:                  "%0 is not defined",
-  non_object_property_load:     "Cannot read property '%0' of %1",
-  non_object_property_store:    "Cannot set property '%0' of %1",
-  non_object_property_call:     "Cannot call method '%0' of %1",
-  illegal_eval:                 "Unsupported indirect eval() call",
-  with_expression:              "%0 has no properties",
-  illegal_invocation:           "Illegal invocation",
-  no_setter_in_callback:        "Cannot set property %0 of %1 which has only a getter",
-  apply_non_function:           "Function.prototype.apply was called on %0, which is a %1 and not a function",
-  apply_wrong_args:             "Function.prototype.apply: Arguments list has wrong type",
-  invalid_in_operator_use:      "Cannot use 'in' operator to search for '%0' in %1",
-  instanceof_function_expected: "Expecting a function in instanceof check, but got %0",
-  instanceof_nonobject_proto:   "Function has non-object prototype '%0' in instanceof check",
-  null_to_object:               "Cannot convert null to object",
-  // RangeError
-  invalid_array_length:         "Invalid array length",
-  invalid_array_apply_length:   "Function.prototype.apply supports only up to 1024 arguments",
-  stack_overflow:               "Maximum call stack size exceeded",
-  apply_overflow:               "Function.prototype.apply cannot support %0 arguments",
-  // SyntaxError
-  unable_to_parse:              "Parse error",
-  duplicate_regexp_flag:        "Duplicate RegExp flag %0",
-  unrecognized_regexp_flag:     "Unrecognized RegExp flag %0",
-  invalid_regexp:               "Invalid RegExp pattern /%0/",
-  illegal_break:                "Illegal break statement",
-  illegal_continue:             "Illegal continue statement",
-  illegal_return:               "Illegal return statement",
-  error_loading_debugger:       "Error loading debugger %0",
-  no_input_to_regexp:           "No input to %0",
-};
+var kMessages = 0;
 
 
 function FormatString(format, args) {
@@ -122,7 +66,7 @@ function FormatString(format, args) {
     var str;
     try { str = ToDetailString(args[i]); }
     catch (e) { str = "#<error>"; }
-    result = result.split("%" + i).join(str);
+    result = ArrayJoin.call(StringSplit.call(result, "%" + i), str);
   }
   return result;
 }
@@ -142,17 +86,9 @@ function ToDetailString(obj) {
 
 
 function MakeGenericError(constructor, type, args) {
-  if (args instanceof $Array) {
-    for (var i = 0; i < args.length; i++) {
-      var elem = args[i];
-      if (elem instanceof $Array && elem.length > 100) { // arbitrary limit, grab a reasonable slice to report
-        args[i] = elem.slice(0,20).concat("...");
-      }
-    }
-  } else if (IS_UNDEFINED(args)) {
+  if (IS_UNDEFINED(args)) {
     args = [];
   }
-
   var e = new constructor(kAddMessageAccessorsMarker);
   e.type = type;
   e.arguments = args;
@@ -160,9 +96,9 @@ function MakeGenericError(constructor, type, args) {
 }
 
 function MakeCatchAllCall(name) {
-	return function() {
-		return this.__noSuchMethod__(name, [].splice.call(arguments, 0));
-	}
+  return function() {
+    return this.__noSuchMethod__(name, [].splice.call(arguments, 0));
+  }
 }
 
 /**
@@ -178,6 +114,67 @@ function MakeCatchAllCall(name) {
 
 // Helper functions; called from the runtime system.
 function FormatMessage(message) {
+  if (kMessages === 0) {
+    kMessages = {
+      // Error
+      cyclic_proto:                 "Cyclic __proto__ value",
+      // TypeError
+      unexpected_token:             "Unexpected token %0",
+      unexpected_token_number:      "Unexpected number",
+      unexpected_token_string:      "Unexpected string",
+      unexpected_token_identifier:  "Unexpected identifier",
+      unexpected_eos:               "Unexpected end of input",
+      malformed_regexp:             "Invalid regular expression: /%0/: %1",
+      unterminated_regexp:          "Invalid regular expression: missing /",
+      regexp_flags:                 "Cannot supply flags when constructing one RegExp from another",
+      invalid_lhs_in_assignment:    "Invalid left-hand side in assignment",
+      invalid_lhs_in_for_in:        "Invalid left-hand side in for-in",
+      invalid_lhs_in_postfix_op:    "Invalid left-hand side expression in postfix operation",
+      invalid_lhs_in_prefix_op:     "Invalid left-hand side expression in prefix operation",
+      multiple_defaults_in_switch:  "More than one default clause in switch statement",
+      newline_after_throw:          "Illegal newline after throw",
+      redeclaration:                "%0 '%1' has already been declared",
+      no_catch_or_finally:          "Missing catch or finally after try",
+      unknown_label:                "Undefined label '%0'",
+      uncaught_exception:           "Uncaught %0",
+      stack_trace:                  "Stack Trace:\n%0",
+      called_non_callable:          "%0 is not a function",
+      undefined_method:             "Object %1 has no method '%0'",
+      property_not_function:        "Property '%0' of object %1 is not a function",
+      cannot_convert_to_primitive:  "Cannot convert object to primitive value",
+      not_constructor:              "%0 is not a constructor",
+      not_defined:                  "%0 is not defined",
+      non_object_property_load:     "Cannot read property '%0' of %1",
+      non_object_property_store:    "Cannot set property '%0' of %1",
+      non_object_property_call:     "Cannot call method '%0' of %1",
+      with_expression:              "%0 has no properties",
+      illegal_invocation:           "Illegal invocation",
+      no_setter_in_callback:        "Cannot set property %0 of %1 which has only a getter",
+      apply_non_function:           "Function.prototype.apply was called on %0, which is a %1 and not a function",
+      apply_wrong_args:             "Function.prototype.apply: Arguments list has wrong type",
+      invalid_in_operator_use:      "Cannot use 'in' operator to search for '%0' in %1",
+      instanceof_function_expected: "Expecting a function in instanceof check, but got %0",
+      instanceof_nonobject_proto:   "Function has non-object prototype '%0' in instanceof check",
+      null_to_object:               "Cannot convert null to object",
+      reduce_no_initial:            "Reduce of empty array with no initial value",
+      // RangeError
+      invalid_array_length:         "Invalid array length",
+      stack_overflow:               "Maximum call stack size exceeded",
+      apply_overflow:               "Function.prototype.apply cannot support %0 arguments",
+      // SyntaxError
+      unable_to_parse:              "Parse error",
+      duplicate_regexp_flag:        "Duplicate RegExp flag %0",
+      invalid_regexp:               "Invalid RegExp pattern /%0/",
+      illegal_break:                "Illegal break statement",
+      illegal_continue:             "Illegal continue statement",
+      illegal_return:               "Illegal return statement",
+      error_loading_debugger:       "Error loading debugger %0",
+      no_input_to_regexp:           "No input to %0",
+      result_not_primitive:         "Result of %0 must be a primitive, was %1",
+      invalid_json:                 "String '%0' is not valid JSON",
+      circular_structure:           "Converting circular structure to JSON"
+    };
+  }
   var format = kMessages[message.type];
   if (!format) return "<unknown message " + message.type + ">";
   return FormatString(format, message.args);
@@ -231,6 +228,40 @@ function MakeError(type, args) {
   return MakeGenericError($Error, type, args);
 }
 
+/**
+ * Find a line number given a specific source position.
+ * @param {number} position The source position.
+ * @return {number} 0 if input too small, -1 if input too large,
+       else the line number.
+ */
+Script.prototype.lineFromPosition = function(position) {
+  var lower = 0;
+  var upper = this.lineCount() - 1;
+
+  // We'll never find invalid positions so bail right away.
+  if (position > this.line_ends[upper]) {
+    return -1;
+  }
+
+  // This means we don't have to safe-guard indexing line_ends[i - 1].
+  if (position <= this.line_ends[0]) {
+    return 0;
+  }
+
+  // Binary search to find line # from position range.
+  while (upper >= 1) {
+    var i = (lower + upper) >> 1;
+
+    if (position > this.line_ends[i]) {
+      lower = i + 1;
+    } else if (position <= this.line_ends[i - 1]) {
+      upper = i - 1;
+    } else {
+      return i;
+    }
+  }
+  return -1;
+}
 
 /**
  * Get information on a specific source position.
@@ -242,25 +273,13 @@ function MakeError(type, args) {
  */
 Script.prototype.locationFromPosition = function (position,
                                                   include_resource_offset) {
-  var lineCount = this.lineCount();
-  var line = -1;
-  if (position <= this.line_ends[0]) {
-    line = 0;
-  } else {
-    for (var i = 1; i < lineCount; i++) {
-      if (this.line_ends[i - 1] < position && position <= this.line_ends[i]) {
-        line = i;
-        break;
-      }
-    }
-  }
-
+  var line = this.lineFromPosition(position);
   if (line == -1) return null;
 
   // Determine start, end and column.
   var start = line == 0 ? 0 : this.line_ends[line - 1] + 1;
   var end = this.line_ends[line];
-  if (end > 0 && this.source.charAt(end - 1) == '\r') end--;
+  if (end > 0 && StringCharAt.call(this.source, end - 1) == '\r') end--;
   var column = position - start;
 
   // Adjust according to the offset within the resource.
@@ -309,16 +328,13 @@ Script.prototype.locationFromLine = function (opt_line, opt_column, opt_offset_p
   if (line == 0) {
     return this.locationFromPosition(offset_position + column, false);
   } else {
-    // Find the line where the offset position is located
-    var lineCount = this.lineCount();
-    var offset_line;
-    for (var i = 0; i < lineCount; i++) {
-      if (offset_position <= this.line_ends[i]) {
-        offset_line = i;
-        break;
-      }
+    // Find the line where the offset position is located.
+    var offset_line = this.lineFromPosition(offset_position);
+
+    if (offset_line == -1 || offset_line + line >= this.lineCount()) {
+      return null;
     }
-    if (offset_line + line >= lineCount) return null;
+
     return this.locationFromPosition(this.line_ends[offset_line + line - 1] + 1 + column);  // line > 0 here.
   }
 }
@@ -376,7 +392,7 @@ Script.prototype.sourceLine = function (opt_line) {
   // Return the source line.
   var start = line == 0 ? 0 : this.line_ends[line - 1] + 1;
   var end = this.line_ends[line];
-  return this.source.substring(start, end);
+  return StringSubstring.call(this.source, start, end);
 }
 
 
@@ -480,7 +496,7 @@ SourceLocation.prototype.restrict = function (opt_limit, opt_before) {
  *     Source text for this location.
  */
 SourceLocation.prototype.sourceText = function () {
-  return this.script.source.substring(this.start, this.end);
+  return StringSubstring.call(this.script.source, this.start, this.end);
 };
 
 
@@ -517,7 +533,7 @@ function SourceSlice(script, from_line, to_line, from_position, to_position) {
  *     the line terminating characters (if any)
  */
 SourceSlice.prototype.sourceText = function () {
-  return this.script.source.substring(this.from_position, this.to_position);
+  return StringSubstring.call(this.script.source, this.from_position, this.to_position);
 };
 
 
@@ -547,54 +563,8 @@ function MakeMessage(type, args, startPos, endPos, script, stackTrace) {
 
 
 function GetStackTraceLine(recv, fun, pos, isGlobal) {
-  try {
-    return UnsafeGetStackTraceLine(recv, fun, pos, isGlobal);
-  } catch (e) {
-    return "<error: " + e + ">";
-  }
+  return FormatSourcePosition(new CallSite(recv, fun, pos));
 }
-
-
-function GetFunctionName(fun, recv) {
-  var name = %FunctionGetName(fun);
-  if (name) return name;
-  for (var prop in recv) {
-    if (recv[prop] === fun)
-      return prop;
-  }
-  return "[anonymous]";
-}
-
-
-function UnsafeGetStackTraceLine(recv, fun, pos, isTopLevel) {
-  var result = "";
-  // The global frame has no meaningful function or receiver
-  if (!isTopLevel) {
-    // If the receiver is not the global object then prefix the
-    // message send
-    if (recv !== global)
-      result += ToDetailString(recv) + ".";
-    result += GetFunctionName(fun, recv);
-  }
-  if (pos != -1) {
-    var script = %FunctionGetScript(fun);
-    var file;
-    if (script) {
-      file = %FunctionGetScript(fun).data;
-    }
-    if (file) {
-      var location = %FunctionGetScript(fun).locationFromPosition(pos, true);
-      if (!isTopLevel) result += "(";
-      result += file;
-      if (location != null) {
-        result += ":" + (location.line + 1) + ":" + (location.column + 1);
-      }
-      if (!isTopLevel) result += ")";
-    }
-  }
-  return (result) ? "    at " + result : result;
-}
-
 
 // ----------------------------------------------------------------------------
 // Error implementation
@@ -605,21 +575,245 @@ function UnsafeGetStackTraceLine(recv, fun, pos, isTopLevel) {
 var kAddMessageAccessorsMarker = { };
 
 // Defines accessors for a property that is calculated the first time
-// the property is read and then replaces the accessor with the value.
-// Also, setting the property causes the accessors to be deleted.
+// the property is read.
 function DefineOneShotAccessor(obj, name, fun) {
   // Note that the accessors consistently operate on 'obj', not 'this'.
   // Since the object may occur in someone else's prototype chain we
   // can't rely on 'this' being the same as 'obj'.
+  var hasBeenSet = false;
+  var value;
   obj.__defineGetter__(name, function () {
-    var value = fun(obj);
-    obj[name] = value;
+    if (hasBeenSet) {
+      return value;
+    }
+    hasBeenSet = true;
+    value = fun(obj);
     return value;
   });
   obj.__defineSetter__(name, function (v) {
-    delete obj[name];
-    obj[name] = v;
+    hasBeenSet = true;
+    value = v;
   });
+}
+
+function CallSite(receiver, fun, pos) {
+  this.receiver = receiver;
+  this.fun = fun;
+  this.pos = pos;
+}
+
+CallSite.prototype.getThis = function () {
+  return this.receiver;
+};
+
+CallSite.prototype.getTypeName = function () {
+  var constructor = this.receiver.constructor;
+  if (!constructor)
+    return $Object.prototype.toString.call(this.receiver);
+  var constructorName = constructor.name;
+  if (!constructorName)
+    return $Object.prototype.toString.call(this.receiver);
+  return constructorName;
+};
+
+CallSite.prototype.isToplevel = function () {
+  if (this.receiver == null)
+    return true;
+  return IS_GLOBAL(this.receiver);
+};
+
+CallSite.prototype.isEval = function () {
+  var script = %FunctionGetScript(this.fun);
+  return script && script.compilation_type == 1;
+};
+
+CallSite.prototype.getEvalOrigin = function () {
+  var script = %FunctionGetScript(this.fun);
+  if (!script || script.compilation_type != 1)
+    return null;
+  return new CallSite(null, script.eval_from_function,
+      script.eval_from_position);
+};
+
+CallSite.prototype.getFunction = function () {
+  return this.fun;
+};
+
+CallSite.prototype.getFunctionName = function () {
+  // See if the function knows its own name
+  var name = this.fun.name;
+  if (name) {
+    return name;
+  } else {
+    return %FunctionGetInferredName(this.fun);
+  }
+  // Maybe this is an evaluation?
+  var script = %FunctionGetScript(this.fun);
+  if (script && script.compilation_type == 1)
+    return "eval";
+  return null;
+};
+
+CallSite.prototype.getMethodName = function () {
+  // See if we can find a unique property on the receiver that holds
+  // this function.
+  var ownName = this.fun.name;
+  if (ownName && this.receiver && this.receiver[ownName] === this.fun)
+    // To handle DontEnum properties we guess that the method has
+    // the same name as the function.
+    return ownName;
+  var name = null;
+  for (var prop in this.receiver) {
+    if (this.receiver[prop] === this.fun) {
+      // If we find more than one match bail out to avoid confusion
+      if (name)
+        return null;
+      name = prop;
+    }
+  }
+  if (name)
+    return name;
+  return null;
+};
+
+CallSite.prototype.getFileName = function () {
+  var script = %FunctionGetScript(this.fun);
+  return script ? script.name : null;
+};
+
+CallSite.prototype.getLineNumber = function () {
+  if (this.pos == -1)
+    return null;
+  var script = %FunctionGetScript(this.fun);
+  var location = null;
+  if (script) {
+    location = script.locationFromPosition(this.pos, true);
+  }
+  return location ? location.line + 1 : null;
+};
+
+CallSite.prototype.getColumnNumber = function () {
+  if (this.pos == -1)
+    return null;
+  var script = %FunctionGetScript(this.fun);
+  var location = null;
+  if (script) {
+    location = script.locationFromPosition(this.pos, true);
+  }
+  return location ? location.column : null;
+};
+
+CallSite.prototype.isNative = function () {
+  var script = %FunctionGetScript(this.fun);
+  return script ? (script.type == 0) : false;
+};
+
+CallSite.prototype.getPosition = function () {
+  return this.pos;
+};
+
+CallSite.prototype.isConstructor = function () {
+  var constructor = this.receiver ? this.receiver.constructor : null;
+  if (!constructor)
+    return false;
+  return this.fun === constructor;
+};
+
+function FormatSourcePosition(frame) {
+  var fileLocation = "";
+  if (frame.isNative()) {
+    fileLocation = "native";
+  } else if (frame.isEval()) {
+    fileLocation = "eval at " + FormatSourcePosition(frame.getEvalOrigin());
+  } else {
+    var fileName = frame.getFileName();
+    if (fileName) {
+      fileLocation += fileName;
+      var lineNumber = frame.getLineNumber();
+      if (lineNumber != null) {
+        fileLocation += ":" + lineNumber;
+        var columnNumber = frame.getColumnNumber();
+        if (columnNumber) {
+          fileLocation += ":" + columnNumber;
+        }
+      }
+    }
+  }
+  if (!fileLocation) {
+    fileLocation = "unknown source";
+  }
+  var line = "";
+  var functionName = frame.getFunction().name;
+  var methodName = frame.getMethodName();
+  var addPrefix = true;
+  var isConstructor = frame.isConstructor();
+  var isMethodCall = !(frame.isToplevel() || isConstructor);
+  if (isMethodCall) {
+    line += frame.getTypeName() + ".";
+    if (functionName) {
+      line += functionName;
+      if (methodName && (methodName != functionName)) {
+        line += " [as " + methodName + "]";
+      }
+    } else {
+      line += methodName || "<anonymous>";
+    }
+  } else if (isConstructor) {
+    line += "new " + (functionName || "<anonymous>");
+  } else if (functionName) {
+    line += functionName;
+  } else {
+    line += fileLocation;
+    addPrefix = false;
+  }
+  if (addPrefix) {
+    line += " (" + fileLocation + ")";
+  }
+  return line;
+}
+
+function FormatStackTrace(error, frames) {
+  var lines = [];
+  try {
+    lines.push(error.toString());
+  } catch (e) {
+    try {
+      lines.push("<error: " + e + ">");
+    } catch (ee) {
+      lines.push("<error>");
+    }
+  }
+  for (var i = 0; i < frames.length; i++) {
+    var frame = frames[i];
+    try {
+      var line = FormatSourcePosition(frame);
+    } catch (e) {
+      try {
+        var line = "<error: " + e + ">";
+      } catch (ee) {
+        // Any code that reaches this point is seriously nasty!
+        var line = "<error>";
+      }
+    }
+    lines.push("    at " + line);
+  }
+  return lines.join("\n");
+}
+
+function FormatRawStackTrace(error, raw_stack) {
+  var frames = [ ];
+  for (var i = 0; i < raw_stack.length; i += 3) {
+    var recv = raw_stack[i];
+    var fun = raw_stack[i+1];
+    var pc = raw_stack[i+2];
+    var pos = %FunctionGetPositionForOffset(fun, pc);
+    frames.push(new CallSite(recv, fun, pos));
+  }
+  if (IS_FUNCTION($Error.prepareStackTrace)) {
+    return $Error.prepareStackTrace(error, frames);
+  } else {
+    return FormatStackTrace(error, frames);
+  }
 }
 
 function DefineError(f) {
@@ -649,7 +843,7 @@ function DefineError(f) {
   %SetProperty(f.prototype, 'constructor', f, DONT_ENUM);
   f.prototype.name = name;
   %SetCode(f, function(m) {
-    if (%IsConstructCall()) {
+    if (%_IsConstructCall()) {
       if (m === kAddMessageAccessorsMarker) {
         DefineOneShotAccessor(this, 'message', function (obj) {
           return FormatMessage({type: obj.type, args: obj.arguments});
@@ -657,11 +851,24 @@ function DefineError(f) {
       } else if (!IS_UNDEFINED(m)) {
         this.message = ToString(m);
       }
+      captureStackTrace(this, f);
     } else {
       return new f(m);
     }
   });
 }
+
+function captureStackTrace(obj, cons_opt) {
+  var stackTraceLimit = $Error.stackTraceLimit;
+  if (!stackTraceLimit) return;
+  if (stackTraceLimit < 0 || stackTraceLimit > 10000)
+    stackTraceLimit = 10000;
+  var raw_stack = %CollectStackTrace(cons_opt ? cons_opt : captureStackTrace,
+      stackTraceLimit);
+  DefineOneShotAccessor(obj, 'stack', function (obj) {
+    return FormatRawStackTrace(obj, raw_stack);
+  });
+};
 
 $Math.__proto__ = global.Object.prototype;
 
@@ -672,6 +879,8 @@ DefineError(function SyntaxError() { });
 DefineError(function ReferenceError() { });
 DefineError(function EvalError() { });
 DefineError(function URIError() { });
+
+$Error.captureStackTrace = captureStackTrace;
 
 // Setup extra properties of the Error.prototype object.
 $Error.prototype.message = '';

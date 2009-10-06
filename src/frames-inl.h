@@ -29,24 +29,23 @@
 #define V8_FRAMES_INL_H_
 
 #include "frames.h"
-#ifdef ARM
-#include "frames-arm.h"
+
+#if V8_TARGET_ARCH_IA32
+#include "ia32/frames-ia32.h"
+#elif V8_TARGET_ARCH_X64
+#include "x64/frames-x64.h"
+#elif V8_TARGET_ARCH_ARM
+#include "arm/frames-arm.h"
 #else
-#include "frames-ia32.h"
+#error Unsupported target architecture.
 #endif
 
-
-namespace v8 { namespace internal {
+namespace v8 {
+namespace internal {
 
 
 inline Address StackHandler::address() const {
-  // NOTE: There's an obvious problem with the address of the NULL
-  // stack handler. Right now, it benefits us that the subtraction
-  // leads to a very high address (above everything else on the
-  // stack), but maybe we should stop relying on it?
-  const int displacement = StackHandlerConstants::kAddressDisplacement;
-  Address address = reinterpret_cast<Address>(const_cast<StackHandler*>(this));
-  return address + displacement;
+  return reinterpret_cast<Address>(const_cast<StackHandler*>(this));
 }
 
 
@@ -65,13 +64,7 @@ inline bool StackHandler::includes(Address address) const {
 
 inline void StackHandler::Iterate(ObjectVisitor* v) const {
   // Stack handlers do not contain any pointers that need to be
-  // traversed. The only field that have to worry about is the code
-  // field which is unused and should always be uninitialized.
-#ifdef DEBUG
-  const int offset = StackHandlerConstants::kCodeOffset;
-  Object* code = Memory::Object_at(address() + offset);
-  ASSERT(Smi::cast(code)->value() == StackHandler::kCodeNotPresent);
-#endif
+  // traversed.
 }
 
 
@@ -119,11 +112,6 @@ inline Object* StandardFrame::context() const {
 }
 
 
-inline Address StandardFrame::caller_sp() const {
-  return pp();
-}
-
-
 inline Address StandardFrame::caller_fp() const {
   return Memory::Address_at(fp() + StandardFrameConstants::kCallerFPOffset);
 }
@@ -140,8 +128,9 @@ inline Address StandardFrame::ComputePCAddress(Address fp) {
 
 
 inline bool StandardFrame::IsArgumentsAdaptorFrame(Address fp) {
-  int context = Memory::int_at(fp + StandardFrameConstants::kContextOffset);
-  return context == ArgumentsAdaptorFrame::SENTINEL;
+  Object* marker =
+      Memory::Object_at(fp + StandardFrameConstants::kContextOffset);
+  return marker == Smi::FromInt(StackFrame::ARGUMENTS_ADAPTOR);
 }
 
 
@@ -154,31 +143,18 @@ inline bool StandardFrame::IsConstructFrame(Address fp) {
 
 inline Object* JavaScriptFrame::receiver() const {
   const int offset = JavaScriptFrameConstants::kReceiverOffset;
-  return Memory::Object_at(pp() + offset);
+  return Memory::Object_at(caller_sp() + offset);
 }
 
 
 inline void JavaScriptFrame::set_receiver(Object* value) {
   const int offset = JavaScriptFrameConstants::kReceiverOffset;
-  Memory::Object_at(pp() + offset) = value;
+  Memory::Object_at(caller_sp() + offset) = value;
 }
 
 
 inline bool JavaScriptFrame::has_adapted_arguments() const {
   return IsArgumentsAdaptorFrame(caller_fp());
-}
-
-
-inline bool JavaScriptFrame::is_at_function() const {
-  Object* result = function_slot_object();
-  // Verify that frame points at correct JS function object.
-  // We are verifying that function object address and
-  // the underlying map object address are valid, and that
-  // function is really a function.
-  return Heap::Contains(reinterpret_cast<Address>(result)) &&
-      result->IsHeapObject() &&
-      Heap::Contains(HeapObject::cast(result)->map()) &&
-      result->IsJSFunction();
 }
 
 

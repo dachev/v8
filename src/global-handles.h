@@ -30,7 +30,8 @@
 
 #include "list-inl.h"
 
-namespace v8 { namespace internal {
+namespace v8 {
+namespace internal {
 
 // Structure for tracking global handles.
 // A single list keeps all the allocated global handles.
@@ -98,8 +99,9 @@ class GlobalHandles : public AllStatic {
   // Iterates over all weak roots in heap.
   static void IterateWeakRoots(ObjectVisitor* v);
 
-  // Mark the weak pointers based on the callback.
-  static void MarkWeakRoots(WeakSlotCallback f);
+  // Find all weak handles satisfying the callback predicate, mark
+  // them as pending.
+  static void IdentifyWeakHandles(WeakSlotCallback f);
 
   // Add an object group.
   // Should only used in GC callback function before a collection.

@@ -28,7 +28,8 @@
 #ifndef V8_CODE_STUBS_H_
 #define V8_CODE_STUBS_H_
 
-namespace v8 { namespace internal {
+namespace v8 {
+namespace internal {
 
 
 // Stub is base classes of all stubs.
@@ -40,6 +41,8 @@ class CodeStub BASE_EMBEDDED {
     SmiOp,
     Compare,
     RecordWrite,  // Last stub that allows stub calls inside.
+    ConvertToDouble,
+    WriteInt32ToHeapNumber,
     StackCheck,
     UnarySub,
     RevertToNumber,
@@ -72,7 +75,7 @@ class CodeStub BASE_EMBEDDED {
 
  protected:
   static const int kMajorBits = 5;
-  static const int kMinorBits = kBitsPerPointer - kMajorBits - kSmiTagSize;
+  static const int kMinorBits = kBitsPerInt - kSmiTagSize - kMajorBits;
 
  private:
   // Generates the assembler code for the stub.
@@ -81,6 +84,10 @@ class CodeStub BASE_EMBEDDED {
   // Returns information for computing the number key.
   virtual Major MajorKey() = 0;
   virtual int MinorKey() = 0;
+
+  // The CallFunctionStub needs to override this so it can encode whether a
+  // lazily generated function should be fully optimized or not.
+  virtual InLoopFlag InLoop() { return NOT_IN_LOOP; }
 
   // Returns a name for logging/debugging purposes.
   virtual const char* GetName() { return MajorName(MajorKey()); }

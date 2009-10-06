@@ -30,7 +30,8 @@
 
 #include "apiutils.h"
 
-namespace v8 { namespace internal {
+namespace v8 {
+namespace internal {
 
 // ----------------------------------------------------------------------------
 // A Handle provides a reference to an object that survives relocation by
@@ -41,7 +42,7 @@ namespace v8 { namespace internal {
 template<class T>
 class Handle {
  public:
-  INLINE(Handle(T** location))  { location_ = location; }
+  INLINE(Handle(T** location)) { location_ = location; }
   INLINE(explicit Handle(T* obj));
 
   INLINE(Handle()) : location_(NULL) {}
@@ -58,7 +59,7 @@ class Handle {
     location_ = reinterpret_cast<T**>(handle.location());
   }
 
-  INLINE(T* operator ->() const)  { return operator*(); }
+  INLINE(T* operator ->() const) { return operator*(); }
 
   // Check if this handle refers to the exact same object as the other handle.
   bool is_identical_to(const Handle<T> other) const {
@@ -81,7 +82,7 @@ class Handle {
   }
 
   static Handle<T> null() { return Handle<T>(); }
-  bool is_null() {return location_ == NULL; }
+  bool is_null() { return location_ == NULL; }
 
   // Closes the given scope, but lets this handle escape. See
   // implementation in api.h.
@@ -118,13 +119,16 @@ class HandleScope {
   static int NumberOfHandles();
 
   // Creates a new handle with the given value.
-  static inline void** CreateHandle(void* value) {
-    void** result = current_.next;
-    if (result == current_.limit) result = Extend();
+  template <typename T>
+  static inline T** CreateHandle(T* value) {
+    internal::Object** cur = current_.next;
+    if (cur == current_.limit) cur = Extend();
     // Update the current next field, set the value in the created
     // handle, and return the result.
-    ASSERT(result < current_.limit);
-    current_.next = result + 1;
+    ASSERT(cur < current_.limit);
+    current_.next = cur + 1;
+
+    T** result = reinterpret_cast<T**>(cur);
     *result = value;
     return result;
   }
@@ -160,13 +164,13 @@ class HandleScope {
   }
 
   // Extend the handle scope making room for more handles.
-  static void** Extend();
+  static internal::Object** Extend();
 
   // Deallocates any extensions used by the current scope.
   static void DeleteExtensions();
 
   // Zaps the handles in the half-open interval [start, end).
-  static void ZapRange(void** start, void** end);
+  static void ZapRange(internal::Object** start, internal::Object** end);
 
   friend class v8::HandleScope;
   friend class v8::ImplementationUtilities;
@@ -180,7 +184,8 @@ class HandleScope {
 // of space or encountering an internal error.
 
 void NormalizeProperties(Handle<JSObject> object,
-                         PropertyNormalizationMode mode);
+                         PropertyNormalizationMode mode,
+                         int expected_additional_properties);
 void NormalizeElements(Handle<JSObject> object);
 void TransformToFastProperties(Handle<JSObject> object,
                                int unused_property_fields);
@@ -195,6 +200,14 @@ Handle<Object> SetProperty(Handle<Object> object,
                            Handle<Object> key,
                            Handle<Object> value,
                            PropertyAttributes attributes);
+
+Handle<Object> ForceSetProperty(Handle<JSObject> object,
+                                Handle<Object> key,
+                                Handle<Object> value,
+                                PropertyAttributes attributes);
+
+Handle<Object> ForceDeleteProperty(Handle<JSObject> object,
+                                   Handle<Object> key);
 
 Handle<Object> IgnoreAttributesAndSetLocalProperty(Handle<JSObject> object,
                                                    Handle<String> key,
@@ -223,6 +236,9 @@ Handle<Object> GetPropertyWithInterceptor(Handle<JSObject> receiver,
 
 Handle<Object> GetPrototype(Handle<Object> obj);
 
+// Return the object's hidden properties object. If the object has no hidden
+// properties and create_if_needed is true, then a new hidden property object
+// will be allocated. Otherwise the Heap::undefined_value is returned.
 Handle<Object> GetHiddenProperties(Handle<JSObject> obj, bool create_if_needed);
 
 Handle<Object> DeleteElement(Handle<JSObject> obj, uint32_t index);
@@ -296,11 +312,11 @@ bool CompileLazy(Handle<JSFunction> function, ClearExceptionFlag flag);
 bool CompileLazyInLoop(Handle<JSFunction> function, ClearExceptionFlag flag);
 
 // These deal with lazily loaded properties.
-void SetupLazy(Handle<JSFunction> fun,
+void SetupLazy(Handle<JSObject> obj,
                int index,
                Handle<Context> compile_context,
                Handle<Context> function_context);
-void LoadLazy(Handle<JSFunction> fun, bool* pending_exception);
+void LoadLazy(Handle<JSObject> obj, bool* pending_exception);
 
 class NoHandleAllocation BASE_EMBEDDED {
  public:
@@ -324,6 +340,7 @@ class NoHandleAllocation BASE_EMBEDDED {
 class OptimizedObjectForAddingMultipleProperties BASE_EMBEDDED {
  public:
   OptimizedObjectForAddingMultipleProperties(Handle<JSObject> object,
+                                             int expected_property_count,
                                              bool condition = true);
   ~OptimizedObjectForAddingMultipleProperties();
  private:

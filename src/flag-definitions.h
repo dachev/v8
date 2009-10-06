@@ -110,6 +110,7 @@ DEFINE_string(expose_natives_as, NULL, "expose natives in global object")
 DEFINE_string(expose_debug_as, NULL, "expose debug in global object")
 DEFINE_string(natives_file, NULL, "alternative natives file")
 DEFINE_bool(expose_gc, false, "expose gc extension")
+DEFINE_int(stack_trace_limit, 10, "number of stack frames to capture")
 
 // builtins-ia32.cc
 DEFINE_bool(inline_new, true, "use fast inline allocation")
@@ -132,6 +133,10 @@ DEFINE_bool(debug_info, true, "add debug information to compiled functions")
 DEFINE_bool(strict, false, "strict error checking")
 DEFINE_int(min_preparse_length, 1024,
            "Minimum length for automatic enable preparsing")
+DEFINE_bool(multipass, false, "use the multipass code generator")
+
+// compilation-cache.cc
+DEFINE_bool(compilation_cache, true, "enable compilation cache")
 
 // debug.cc
 DEFINE_bool(remote_debugging, false, "enable remote debugging")
@@ -139,9 +144,6 @@ DEFINE_bool(trace_debug_json, false, "trace debugging JSON request/response")
 DEFINE_bool(debugger_auto_break, false,
             "automatically set the debug break flag when debugger commands are "
             "in the queue (experimental)")
-
-// execution.cc
-DEFINE_bool(call_regexp, false, "allow calls to RegExp objects")
 
 // frames.cc
 DEFINE_int(max_stack_trace_source_length, 300,
@@ -154,9 +156,14 @@ DEFINE_bool(gc_global, false, "always perform global GCs")
 DEFINE_int(gc_interval, -1, "garbage collect after <n> allocations")
 DEFINE_bool(trace_gc, false,
             "print one trace line following each garbage collection")
+DEFINE_bool(trace_gc_verbose, false,
+            "print more details following each garbage collection")
 DEFINE_bool(collect_maps, true,
             "garbage collect maps from which no objects can be reached")
 
+// v8.cc
+DEFINE_bool(use_idle_notification, true,
+            "Use idle notification to reduce memory footprint.")
 // ic.cc
 DEFINE_bool(use_ic, true, "use inline caching")
 
@@ -204,8 +211,6 @@ DEFINE_bool(preemption, false,
 
 // Regexp
 DEFINE_bool(trace_regexps, false, "trace regexp execution")
-DEFINE_bool(regexp_native, true,
-            "use native code regexp implementation (IA32 only)")
 DEFINE_bool(regexp_optimization, true, "generate optimized regexp code")
 
 // Testing flags test/cctest/test-{flags,api,serialization}.cc
@@ -266,6 +271,7 @@ DEFINE_string(stop_at, "", "function name where to insert a breakpoint")
 // compiler.cc
 DEFINE_bool(print_builtin_scopes, false, "print scopes for builtins")
 DEFINE_bool(print_scopes, false, "print scopes")
+DEFINE_bool(print_cfg, false, "print control-flow graph")
 
 // contexts.cc
 DEFINE_bool(trace_contexts, false, "trace contexts operations")
@@ -329,10 +335,15 @@ DEFINE_bool(log_gc, false,
 DEFINE_bool(log_handles, false, "Log global handle events.")
 DEFINE_bool(log_state_changes, false, "Log state changes.")
 DEFINE_bool(log_suspect, false, "Log suspect operations.")
+DEFINE_bool(compress_log, false,
+            "Compress log to save space (makes log less human-readable).")
 DEFINE_bool(prof, false,
             "Log statistical profiling information (implies --log-code).")
 DEFINE_bool(prof_auto, true,
             "Used with --prof, starts profiling automatically")
+DEFINE_bool(prof_lazy, false,
+            "Used with --prof, only does sampling and logging"
+            " when profiler is active (implies --noprof_auto).")
 DEFINE_bool(log_regexp, false, "Log regular expression execution.")
 DEFINE_bool(sliding_state_window, false,
             "Update sliding state window counters.")

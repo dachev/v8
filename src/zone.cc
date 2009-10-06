@@ -29,7 +29,8 @@
 
 #include "zone-inl.h"
 
-namespace v8 { namespace internal {
+namespace v8 {
+namespace internal {
 
 
 Address Zone::position_ = 0;
@@ -175,7 +176,10 @@ Address Zone::NewExpand(int size) {
     new_size = Max(kSegmentOverhead + size, kMaximumSegmentSize);
   }
   Segment* segment = Segment::New(new_size);
-  if (segment == NULL) V8::FatalProcessOutOfMemory("Zone");
+  if (segment == NULL) {
+    V8::FatalProcessOutOfMemory("Zone");
+    return NULL;
+  }
 
   // Recompute 'top' and 'limit' based on the new segment.
   Address result = RoundUp(segment->start(), kAlignment);

@@ -164,6 +164,8 @@ class SimpleProgressIndicator(ProgressIndicator):
       print "Command: %s" % EscapeCommand(failed.command)
       if failed.HasCrashed():
         print "--- CRASHED ---"
+      if failed.HasTimedOut():
+        print "--- TIMEOUT ---"
     if len(self.failed) == 0:
       print "==="
       print "=== All tests succeeded"
@@ -207,6 +209,9 @@ class DotsProgressIndicator(SimpleProgressIndicator):
       if output.HasCrashed():
         sys.stdout.write('C')
         sys.stdout.flush()
+      elif output.HasTimedOut():
+        sys.stdout.write('T')
+        sys.stdout.flush()
       else:
         sys.stdout.write('F')
         sys.stdout.flush()
@@ -245,6 +250,8 @@ class CompactProgressIndicator(ProgressIndicator):
       print "Command: %s" % EscapeCommand(output.command)
       if output.HasCrashed():
         print "--- CRASHED ---"
+      if output.HasTimedOut():
+        print "--- TIMEOUT ---"
 
   def Truncate(self, str, length):
     if length and (len(str) > (length - 3)):
@@ -349,10 +356,14 @@ class TestCase(object):
   def RunCommand(self, command):
     full_command = self.context.processor(command)
     output = Execute(full_command, self.context, self.context.timeout)
+    self.Cleanup()
     return TestOutput(self, full_command, output)
 
   def Run(self):
     return self.RunCommand(self.GetCommand())
+
+  def Cleanup(self):
+    return
 
 
 class TestOutput(object):
@@ -365,6 +376,8 @@ class TestOutput(object):
   def UnexpectedOutput(self):
     if self.HasCrashed():
       outcome = CRASH
+    elif self.HasTimedOut():
+      outcome = TIMEOUT
     elif self.HasFailed():
       outcome = FAIL
     else:
@@ -380,6 +393,9 @@ class TestOutput(object):
         return False
       return self.output.exit_code < 0 and \
              self.output.exit_code != -signal.SIGABRT
+
+  def HasTimedOut(self):
+    return self.output.timed_out;
 
   def HasFailed(self):
     execution_failed = self.test.DidFail(self.output)
@@ -461,6 +477,13 @@ def PrintError(str):
   sys.stderr.write('\n')
 
 
+def CheckedUnlink(name):
+  try:
+    os.unlink(name)
+  except OSError, e:
+    PrintError("os.unlink() " + str(e))
+
+
 def Execute(args, context, timeout=None):
   (fd_out, outname) = tempfile.mkstemp()
   (fd_err, errname) = tempfile.mkstemp()
@@ -475,11 +498,6 @@ def Execute(args, context, timeout=None):
   os.close(fd_err)
   output = file(outname).read()
   errors = file(errname).read()
-  def CheckedUnlink(name):
-    try:
-      os.unlink(name)
-    except OSError, e:
-      PrintError("os.unlink() " + str(e))
   CheckedUnlink(outname)
   CheckedUnlink(errname)
   return CommandOutput(exit_code, timed_out, output, errors)
@@ -1118,6 +1136,7 @@ def ProcessOptions(options):
     # was found, set the arch to the guess.
     if options.arch == 'none':
       options.arch = ARCH_GUESS
+    options.scons_flags.append("arch=" + options.arch)
   return True
 
 

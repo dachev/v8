@@ -32,13 +32,15 @@
 #include "debug.h"
 #include "macro-assembler.h"
 
-namespace v8 { namespace internal {
+namespace v8 {
+namespace internal {
 
 
 Address IC::address() {
   // Get the address of the call.
-  Address result = pc() - Assembler::kTargetAddrToReturnAddrDist;
+  Address result = pc() - Assembler::kPatchReturnSequenceLength;
 
+#ifdef ENABLE_DEBUGGER_SUPPORT
   // First check if any break points are active if not just return the address
   // of the call.
   if (!Debug::has_break_points()) return result;
@@ -55,6 +57,9 @@ Address IC::address() {
     // No break point here just return the address of the call.
     return result;
   }
+#else
+  return result;
+#endif
 }
 
 

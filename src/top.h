@@ -30,7 +30,8 @@
 
 #include "frames-inl.h"
 
-namespace v8 { namespace internal {
+namespace v8 {
+namespace internal {
 
 
 #define RETURN_IF_SCHEDULED_EXCEPTION() \
@@ -45,6 +46,7 @@ class ThreadLocalTop BASE_EMBEDDED {
   // The context where the current execution method is created and for variable
   // lookups.
   Context* context_;
+  int thread_id_;
   Object* pending_exception_;
   bool has_pending_message_;
   const char* pending_message_;
@@ -64,6 +66,9 @@ class ThreadLocalTop BASE_EMBEDDED {
   // Stack.
   Address c_entry_fp_;  // the frame pointer of the top c entry frame
   Address handler_;   // try-blocks are chained through the stack
+#ifdef ENABLE_LOGGING_AND_PROFILING
+  Address js_entry_sp_;  // the stack pointer of the bottom js entry frame
+#endif
   bool stack_is_cooked_;
   inline bool stack_is_cooked() { return stack_is_cooked_; }
   inline void set_stack_is_cooked(bool value) { stack_is_cooked_ = value; }
@@ -82,11 +87,20 @@ class ThreadLocalTop BASE_EMBEDDED {
   C(pending_exception_address)         \
   C(external_caught_exception_address)
 
+#ifdef ENABLE_LOGGING_AND_PROFILING
+#define TOP_ADDRESS_LIST_PROF(C)       \
+  C(js_entry_sp_address)
+#else
+#define TOP_ADDRESS_LIST_PROF(C)
+#endif
+
+
 class Top {
  public:
   enum AddressId {
 #define C(name) k_##name,
     TOP_ADDRESS_LIST(C)
+    TOP_ADDRESS_LIST_PROF(C)
 #undef C
     k_top_address_count
   };
@@ -104,6 +118,10 @@ class Top {
   static void set_save_context(SaveContext* save) {
     thread_local_.save_context_ = save;
   }
+
+  // Access to current thread id.
+  static int thread_id() { return thread_local_.thread_id_; }
+  static void set_thread_id(int id) { thread_local_.thread_id_ = id; }
 
   // Interface to pending exception.
   static Object* pending_exception() {
@@ -139,7 +157,8 @@ class Top {
   // exceptions.  If an exception was thrown and not handled by an external
   // handler the exception is scheduled to be rethrown when we return to running
   // JavaScript code.  If an exception is scheduled true is returned.
-  static bool optional_reschedule_exception(bool is_bottom_call);
+  static bool OptionalRescheduleException(bool is_bottom_call,
+                                          bool force_clear_catchable);
 
   static bool* external_caught_exception_address() {
     return &thread_local_.external_caught_exception_;
@@ -177,6 +196,16 @@ class Top {
     return &thread_local_.c_entry_fp_;
   }
   static inline Address* handler_address() { return &thread_local_.handler_; }
+
+#ifdef ENABLE_LOGGING_AND_PROFILING
+  // Bottom JS entry (see StackTracer::Trace in log.cc).
+  static Address js_entry_sp(ThreadLocalTop* thread) {
+    return thread->js_entry_sp_;
+  }
+  static inline Address* js_entry_sp_address() {
+    return &thread_local_.js_entry_sp_;
+  }
+#endif
 
   // Generated code scratch locations.
   static void* formal_count_address() { return &thread_local_.formal_count_; }
@@ -216,13 +245,15 @@ class Top {
   static Failure* ReThrow(Object* exception, MessageLocation* location = NULL);
   static void ScheduleThrow(Object* exception);
   static void ReportPendingMessages();
+  static Failure* ThrowIllegalOperation();
 
   // Promote a scheduled exception to pending. Asserts has_scheduled_exception.
   static Object* PromoteScheduledException();
   static void DoThrow(Object* exception,
                       MessageLocation* location,
                       const char* message);
-  static bool ShouldReportException(bool* is_caught_externally);
+  static bool ShouldReturnException(bool* is_caught_externally,
+                                    bool catchable_by_javascript);
   static void ReportUncaughtException(Handle<Object> exception,
                                       MessageLocation* location,
                                       Handle<String> stack_trace);
@@ -236,6 +267,7 @@ class Top {
 
   // Out of resource exception helpers.
   static Failure* StackOverflow();
+  static Failure* TerminateExecution();
 
   // Administration
   static void Initialize();
@@ -255,7 +287,12 @@ class Top {
     return context()->global_proxy();
   }
 
+  // Returns the current global context.
   static Handle<Context> global_context();
+
+  // Returns the global context of the calling JavaScript code.  That
+  // is, the global context of the top-most JavaScript frame.
+  static Handle<Context> GetCallingGlobalContext();
 
   static Handle<JSBuiltinsObject> builtins() {
     return Handle<JSBuiltinsObject>(thread_local_.context_->builtins());

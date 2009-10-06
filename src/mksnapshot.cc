@@ -25,8 +25,6 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-// To avoid warnings from <map> on windows we disable exceptions.
-#define _HAS_EXCEPTIONS 0
 #include <signal.h>
 #include <string>
 #include <map>
@@ -173,7 +171,7 @@ int main(int argc, char** argv) {
     }
   }
   // Get rid of unreferenced scripts with a global GC.
-  i::Heap::CollectAllGarbage();
+  i::Heap::CollectAllGarbage(false);
   i::Serializer ser;
   ser.Serialize();
   v8::internal::byte* bytes;

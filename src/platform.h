@@ -44,6 +44,8 @@
 #ifndef V8_PLATFORM_H_
 #define V8_PLATFORM_H_
 
+#define V8_INFINITY INFINITY
+
 // Windows specific stuff.
 #ifdef WIN32
 
@@ -58,9 +60,11 @@ enum {
   FP_NORMAL
 };
 
-#define INFINITY HUGE_VAL
+#undef V8_INFINITY
+#define V8_INFINITY HUGE_VAL
 
-namespace v8 { namespace internal {
+namespace v8 {
+namespace internal {
 int isfinite(double x);
 } }
 int isnan(double x);
@@ -74,14 +78,6 @@ int strncasecmp(const char* s1, const char* s2, int n);
 
 #endif  // _MSC_VER
 
-// MinGW specific stuff.
-#ifdef __MINGW32__
-
-// Needed for va_list.
-#include <stdarg.h>
-
-#endif  // __MINGW32__
-
 // Random is missing on both Visual Studio and MinGW.
 int random();
 
@@ -89,6 +85,10 @@ int random();
 
 // GCC specific stuff
 #ifdef __GNUC__
+
+// Needed for va_list on at least MinGW and Android.
+#include <stdarg.h>
+
 #define __GNUC_VERSION__ (__GNUC__ * 10000 + __GNUC_MINOR__ * 100)
 
 // Unfortunately, the INFINITY macro cannot be used with the '-pedantic'
@@ -99,13 +99,16 @@ int random();
 // __GNUC_PREREQ is not defined in GCC for Mac OS X, so we define our own macro
 #if __GNUC_VERSION__ >= 29600 && __GNUC_VERSION__ < 40100
 #include <limits>
-#undef INFINITY
-#define INFINITY std::numeric_limits<double>::infinity()
+#undef V8_INFINITY
+#define V8_INFINITY std::numeric_limits<double>::infinity()
 #endif
 
 #endif  // __GNUC__
 
-namespace v8 { namespace internal {
+namespace v8 {
+namespace internal {
+
+class Semaphore;
 
 double ceiling(double x);
 
@@ -140,7 +143,7 @@ class OS {
 
   // Returns a string identifying the current time zone. The
   // timestamp is used for determining if DST is in effect.
-  static char* LocalTimezone(double time);
+  static const char* LocalTimezone(double time);
 
   // Returns the local time offset in milliseconds east of UTC without
   // taking daylight savings time into account.
@@ -207,7 +210,7 @@ class OS {
     char text[kStackWalkMaxTextLen];
   };
 
-  static int StackWalk(StackFrame* frames, int frames_size);
+  static int StackWalk(Vector<StackFrame> frames);
 
   // Factory method for creating platform dependent Mutex.
   // Please use delete to reclaim the storage for the returned Mutex.
@@ -350,7 +353,16 @@ class Thread: public ThreadHandle {
   static LocalStorageKey CreateThreadLocalKey();
   static void DeleteThreadLocalKey(LocalStorageKey key);
   static void* GetThreadLocal(LocalStorageKey key);
+  static int GetThreadLocalInt(LocalStorageKey key) {
+    return static_cast<int>(reinterpret_cast<intptr_t>(GetThreadLocal(key)));
+  }
   static void SetThreadLocal(LocalStorageKey key, void* value);
+  static void SetThreadLocalInt(LocalStorageKey key, int value) {
+    SetThreadLocal(key, reinterpret_cast<void*>(static_cast<intptr_t>(value)));
+  }
+  static bool HasThreadLocal(LocalStorageKey key) {
+    return GetThreadLocal(key) != NULL;
+  }
 
   // A hint to the scheduler to let another thread run.
   static void YieldCPU();
@@ -482,10 +494,10 @@ class Socket {
 // TickSample captures the information collected for each sample.
 class TickSample {
  public:
-  TickSample() : pc(0), sp(0), fp(0), state(OTHER) {}
-  unsigned int pc;  // Instruction pointer.
-  unsigned int sp;  // Stack pointer.
-  unsigned int fp;  // Frame pointer.
+  TickSample() : pc(0), sp(0), fp(0), state(OTHER), frames_count(0) {}
+  uintptr_t pc;  // Instruction pointer.
+  uintptr_t sp;  // Stack pointer.
+  uintptr_t fp;  // Frame pointer.
   StateTag state;   // The state of the VM.
   static const int kMaxFramesCount = 100;
   EmbeddedVector<Address, kMaxFramesCount> stack;  // Call stack.
@@ -498,6 +510,9 @@ class Sampler {
   explicit Sampler(int interval, bool profiling);
   virtual ~Sampler();
 
+  // Performs stack sampling.
+  virtual void SampleStack(TickSample* sample) = 0;
+
   // This method is called for each sampling period with the current
   // program counter.
   virtual void Tick(TickSample* sample) = 0;
@@ -509,13 +524,14 @@ class Sampler {
   // Is the sampler used for profiling.
   inline bool IsProfiling() { return profiling_; }
 
-  class PlatformData;
- protected:
+  // Whether the sampler is running (that is, consumes resources).
   inline bool IsActive() { return active_; }
 
+  class PlatformData;
+
  private:
-  int interval_;
-  bool profiling_;
+  const int interval_;
+  const bool profiling_;
   bool active_;
   PlatformData* data_;  // Platform specific data.
   DISALLOW_IMPLICIT_CONSTRUCTORS(Sampler);

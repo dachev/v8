@@ -18,7 +18,7 @@
 		<Configuration
 			Name="Debug|Win32"
 			ConfigurationType="4"
-			InheritedPropertySheets=".\common.vsprops;.\debug.vsprops"
+			InheritedPropertySheets=".\common.vsprops;.\ia32.vsprops;.\debug.vsprops"
 			>
 			<Tool
 				Name="VCPreBuildEventTool"
@@ -69,7 +69,7 @@
 		<Configuration
 			Name="Release|Win32"
 			ConfigurationType="4"
-			InheritedPropertySheets=".\common.vsprops;.\release.vsprops"
+			InheritedPropertySheets=".\common.vsprops;.\ia32.vsprops;.\release.vsprops"
 			>
 			<Tool
 				Name="VCPreBuildEventTool"
@@ -177,15 +177,15 @@
 				>
 			</File>
 			<File
-				RelativePath="..\..\src\assembler-ia32-inl.h"
+				RelativePath="..\..\src\ia32\assembler-ia32-inl.h"
 				>
 			</File>
 			<File
-				RelativePath="..\..\src\assembler-ia32.cc"
+				RelativePath="..\..\src\ia32\assembler-ia32.cc"
 				>
 			</File>
 			<File
-				RelativePath="..\..\src\assembler-ia32.h"
+				RelativePath="..\..\src\ia32\assembler-ia32.h"
 				>
 			</File>
 			<File
@@ -221,7 +221,7 @@
 				>
 			</File>
 			<File
-				RelativePath="..\..\src\builtins-ia32.cc"
+				RelativePath="..\..\src\ia32\builtins-ia32.cc"
 				>
 			</File>
 			<File
@@ -234,6 +234,18 @@
 			</File>
 			<File
 				RelativePath="..\..\src\bytecodes-irregexp.h"
+				>
+			</File>
+			<File
+				RelativePath="..\..\src\ia32\cfg-ia32.cc"
+				>
+			</File>
+			<File
+				RelativePath="..\..\src\cfg.cc"
+				>
+			</File>
+			<File
+				RelativePath="..\..\src\cfg.h"
 				>
 			</File>
 			<File
@@ -265,11 +277,11 @@
 				>
 			</File>
 			<File
-				RelativePath="..\..\src\codegen-ia32.cc"
+				RelativePath="..\..\src\ia32\codegen-ia32.cc"
 				>
 			</File>
 			<File
-				RelativePath="..\..\src\codegen-ia32.h"
+				RelativePath="..\..\src\ia32\codegen-ia32.h"
 				>
 			</File>
 			<File
@@ -329,7 +341,7 @@
 				>
 			</File>
 			<File
-				RelativePath="..\..\src\cpu-ia32.cc"
+				RelativePath="..\..\src\ia32\cpu-ia32.cc"
 				>
 			</File>
 			<File
@@ -353,7 +365,7 @@
 				>
 			</File>
 			<File
-				RelativePath="..\..\src\debug-ia32.cc"
+				RelativePath="..\..\src\ia32\debug-ia32.cc"
 				>
 			</File>
 			<File
@@ -397,11 +409,19 @@
 				>
 			</File>
 			<File
-				RelativePath="..\..\src\frames-ia32.cc"
+				RelativePath="..\..\src\frame-element.cc"
 				>
 			</File>
 			<File
-				RelativePath="..\..\src\frames-ia32.h"
+				RelativePath="..\..\src\frame-element.h"
+				>
+			</File>
+			<File
+				RelativePath="..\..\src\ia32\frames-ia32.cc"
+				>
+			</File>
+			<File
+				RelativePath="..\..\src\ia32\frames-ia32.h"
 				>
 			</File>
 			<File
@@ -414,6 +434,14 @@
 			</File>
 			<File
 				RelativePath="..\..\src\frames.h"
+				>
+			</File>
+			<File
+				RelativePath="..\..\src\func-name-inferrer.cc"
+				>
+			</File>
+			<File
+				RelativePath="..\..\src\func-name-inferrer.h"
 				>
 			</File>
 			<File
@@ -461,7 +489,7 @@
 				>
 			</File>
 			<File
-				RelativePath="..\..\src\ic-ia32.cc"
+				RelativePath="..\..\src\ia32\ic-ia32.cc"
 				>
 			</File>
 			<File
@@ -493,15 +521,15 @@
 				>
 			</File>
 			<File
+				RelativePath="..\..\src\jump-target-inl.h"
+				>
+			</File>
+			<File
 				RelativePath="..\..\src\jump-target.cc"
 				>
 			</File>
 			<File
-				RelativePath="..\..\src\jump-target-ia32.cc"
-				>
-			</File>
-			<File
-				RelativePath="..\..\src\jsregexp-inl.h"
+				RelativePath="..\..\src\ia32\jump-target-ia32.cc"
 				>
 			</File>
 			<File
@@ -525,15 +553,27 @@
 				>
 			</File>
 			<File
+				RelativePath="..\..\src\log-inl.h"
+				>
+			</File>
+			<File
 				RelativePath="..\..\src\log.h"
 				>
 			</File>
 			<File
-				RelativePath="..\..\src\macro-assembler-ia32.cc"
+				RelativePath="..\..\src\log-utils.cc"
 				>
 			</File>
 			<File
-				RelativePath="..\..\src\macro-assembler-ia32.h"
+				RelativePath="..\..\src\log-utils.h"
+				>
+			</File>
+			<File
+				RelativePath="..\..\src\ia32\macro-assembler-ia32.cc"
+				>
+			</File>
+			<File
+				RelativePath="..\..\src\ia32\macro-assembler-ia32.h"
 				>
 			</File>
 			<File
@@ -637,11 +677,11 @@
 				>
 			</File>
 			<File
-				RelativePath="..\..\src\regexp-macro-assembler-ia32.cc"
+				RelativePath="..\..\src\ia32\regexp-macro-assembler-ia32.cc"
 				>
 			</File>
 			<File
-				RelativePath="..\..\src\regexp-macro-assembler-ia32.h"
+				RelativePath="..\..\src\ia32\regexp-macro-assembler-ia32.h"
 				>
 			</File>
 			<File
@@ -681,7 +721,7 @@
 				>
 			</File>
 			<File
-				RelativePath="..\..\src\register-allocator-ia32.cc"
+				RelativePath="..\..\src\ia32\register-allocator-ia32.cc"
 				>
 			</File>
 			<File
@@ -765,7 +805,7 @@
 				>
 			</File>
 			<File
-				RelativePath="..\..\src\stub-cache-ia32.cc"
+				RelativePath="..\..\src\ia32\stub-cache-ia32.cc"
 				>
 			</File>
 			<File
@@ -849,11 +889,19 @@
 				>
 			</File>
 			<File
+				RelativePath="..\..\src\version.cc"
+				>
+			</File>
+			<File
+				RelativePath="..\..\src\version.h"
+				>
+			</File>
+			<File
 				RelativePath="..\..\src\virtual-frame.h"
 				>
 			</File>
 			<File
-				RelativePath="..\..\src\virtual-frame-ia32.h"
+				RelativePath="..\..\src\ia32\virtual-frame-ia32.h"
 				>
 			</File>
 			<File
@@ -861,7 +909,7 @@
 				>
 			</File>
 			<File
-				RelativePath="..\..\src\virtual-frame-ia32.cc"
+				RelativePath="..\..\src\ia32\virtual-frame-ia32.cc"
 				>
 			</File>
 			<File
@@ -880,7 +928,7 @@
 				Name="third party"
 				>
 				<File
-					RelativePath="..\..\src\disasm-ia32.cc"
+					RelativePath="..\..\src\ia32\disasm-ia32.cc"
 					>
 				</File>
 				<File

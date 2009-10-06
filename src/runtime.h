@@ -28,7 +28,8 @@
 #ifndef V8_RUNTIME_H_
 #define V8_RUNTIME_H_
 
-namespace v8 { namespace internal {
+namespace v8 {
+namespace internal {
 
 // The interface to C++ runtime functions.
 
@@ -37,7 +38,10 @@ namespace v8 { namespace internal {
 // release and debug mode.
 // This macro should only be used by the macro RUNTIME_FUNCTION_LIST.
 
-#define RUNTIME_FUNCTION_LIST_ALWAYS(F) \
+// WARNING: RUNTIME_FUNCTION_LIST_ALWAYS_* is a very large macro that caused
+// MSVC Intellisense to crash.  It was broken into two macros to work around
+// this problem. Please avoid large recursive macros whenever possible.
+#define RUNTIME_FUNCTION_LIST_ALWAYS_1(F) \
   /* Property access */ \
   F(GetProperty, 2) \
   F(KeyedGetProperty, 2) \
@@ -53,12 +57,14 @@ namespace v8 { namespace internal {
   F(ToSlowProperties, 1) \
   \
   F(IsInPrototypeChain, 2) \
+  F(SetHiddenPrototype, 2) \
   \
   F(IsConstructCall, 0) \
   \
   /* Utilities */ \
   F(GetCalledFunction, 0) \
   F(GetFunctionDelegate, 1) \
+  F(GetConstructorDelegate, 1) \
   F(NewArguments, 1) \
   F(NewArgumentsFast, 3) \
   F(LazyCompile, 1) \
@@ -129,7 +135,6 @@ namespace v8 { namespace internal {
   F(Math_floor, 1) \
   F(Math_log, 1) \
   F(Math_pow, 2) \
-  F(Math_random, 0) \
   F(Math_round, 1) \
   F(Math_sin, 1) \
   F(Math_sqrt, 1) \
@@ -152,8 +157,9 @@ namespace v8 { namespace internal {
   F(NumberToRadixString, 2) \
   F(NumberToFixed, 2) \
   F(NumberToExponential, 2) \
-  F(NumberToPrecision, 2) \
-  \
+  F(NumberToPrecision, 2)
+
+#define RUNTIME_FUNCTION_LIST_ALWAYS_2(F) \
   /* Reflection */ \
   F(FunctionSetInstanceClassName, 2) \
   F(FunctionSetLength, 2) \
@@ -163,18 +169,12 @@ namespace v8 { namespace internal {
   F(FunctionGetSourceCode, 1) \
   F(FunctionGetScript, 1) \
   F(FunctionGetScriptSourcePosition, 1) \
+  F(FunctionGetPositionForOffset, 2) \
   F(FunctionIsAPIFunction, 1) \
   F(GetScript, 1) \
+  F(CollectStackTrace, 2) \
   \
   F(ClassOf, 1) \
-  F(HasDateClass, 1) \
-  F(HasStringClass, 1) \
-  F(HasArrayClass, 1) \
-  F(HasFunctionClass, 1) \
-  F(HasNumberClass, 1) \
-  F(HasBooleanClass, 1) \
-  F(HasArgumentsClass, 1) \
-  F(HasRegExpClass, 1) \
   F(SetCode, 2) \
   \
   F(CreateApiFunction, 1) \
@@ -195,7 +195,6 @@ namespace v8 { namespace internal {
   \
   /* Globals */ \
   F(CompileString, 2) \
-  F(CompileScript, 4) \
   F(GlobalPrint, 1) \
   \
   /* Eval */ \
@@ -206,7 +205,7 @@ namespace v8 { namespace internal {
   F(IgnoreAttributesAndSetProperty, -1 /* 3 or 4 */) \
   \
   /* Arrays */ \
-  F(RemoveArrayHoles, 1) \
+  F(RemoveArrayHoles, 2) \
   F(GetArrayKeys, 2) \
   F(MoveArrayContents, 2) \
   F(EstimateNumberOfElements, 1) \
@@ -214,42 +213,6 @@ namespace v8 { namespace internal {
   /* Getters and Setters */ \
   F(DefineAccessor, -1 /* 4 or 5 */) \
   F(LookupAccessor, 3) \
-  \
-  /* Debugging */ \
-  F(SetDebugEventListener, 2) \
-  F(Break, 0) \
-  F(DebugGetPropertyDetails, 2) \
-  F(DebugGetProperty, 2) \
-  F(DebugLocalPropertyNames, 1) \
-  F(DebugLocalElementNames, 1) \
-  F(DebugPropertyTypeFromDetails, 1) \
-  F(DebugPropertyAttributesFromDetails, 1) \
-  F(DebugPropertyIndexFromDetails, 1) \
-  F(DebugInterceptorInfo, 1) \
-  F(DebugNamedInterceptorPropertyNames, 1) \
-  F(DebugIndexedInterceptorElementNames, 1) \
-  F(DebugNamedInterceptorPropertyValue, 2) \
-  F(DebugIndexedInterceptorElementValue, 2) \
-  F(CheckExecutionState, 1) \
-  F(GetFrameCount, 1) \
-  F(GetFrameDetails, 2) \
-  F(GetCFrames, 1) \
-  F(GetThreadCount, 1) \
-  F(GetThreadDetails, 2) \
-  F(GetBreakLocations, 1) \
-  F(SetFunctionBreakPoint, 3) \
-  F(SetScriptBreakPoint, 3) \
-  F(ClearBreakPoint, 1) \
-  F(ChangeBreakOnException, 2) \
-  F(PrepareStep, 3) \
-  F(ClearStepping, 0) \
-  F(DebugEvaluate, 4) \
-  F(DebugEvaluateGlobal, 3) \
-  F(DebugGetLoadedScripts, 0) \
-  F(DebugReferencedBy, 3) \
-  F(DebugConstructedBy, 2) \
-  F(DebugGetPrototype, 1) \
-  F(SystemBreak, 0) \
   \
   /* Literals */ \
   F(MaterializeRegExpLiteral, 4)\
@@ -284,14 +247,14 @@ namespace v8 { namespace internal {
   F(InitializeVarGlobal, -1 /* 1 or 2 */) \
   F(InitializeConstGlobal, 2) \
   F(InitializeConstContextSlot, 3) \
+  F(OptimizeObjectForAddingMultipleProperties, 2) \
+  F(TransformToFastProperties, 1) \
   \
   /* Debugging */ \
   F(DebugPrint, 1) \
   F(DebugTrace, 0) \
   F(TraceEnter, 0) \
   F(TraceExit, 1) \
-  F(DebugBreak, 0) \
-  F(FunctionGetAssemblerCode, 1) \
   F(Abort, 2) \
   /* Logging */ \
   F(Log, 2) \
@@ -299,6 +262,53 @@ namespace v8 { namespace internal {
   /* Pseudo functions - handled as macros by parser */ \
   F(IS_VAR, 1)
 
+#ifdef ENABLE_DEBUGGER_SUPPORT
+#define RUNTIME_FUNCTION_LIST_DEBUGGER_SUPPORT(F) \
+  /* Debugger support*/ \
+  F(DebugBreak, 0) \
+  F(SetDebugEventListener, 2) \
+  F(Break, 0) \
+  F(DebugGetPropertyDetails, 2) \
+  F(DebugGetProperty, 2) \
+  F(DebugLocalPropertyNames, 1) \
+  F(DebugLocalElementNames, 1) \
+  F(DebugPropertyTypeFromDetails, 1) \
+  F(DebugPropertyAttributesFromDetails, 1) \
+  F(DebugPropertyIndexFromDetails, 1) \
+  F(DebugInterceptorInfo, 1) \
+  F(DebugNamedInterceptorPropertyNames, 1) \
+  F(DebugIndexedInterceptorElementNames, 1) \
+  F(DebugNamedInterceptorPropertyValue, 2) \
+  F(DebugIndexedInterceptorElementValue, 2) \
+  F(CheckExecutionState, 1) \
+  F(GetFrameCount, 1) \
+  F(GetFrameDetails, 2) \
+  F(GetScopeCount, 2) \
+  F(GetScopeDetails, 3) \
+  F(DebugPrintScopes, 0) \
+  F(GetCFrames, 1) \
+  F(GetThreadCount, 1) \
+  F(GetThreadDetails, 2) \
+  F(GetBreakLocations, 1) \
+  F(SetFunctionBreakPoint, 3) \
+  F(SetScriptBreakPoint, 3) \
+  F(ClearBreakPoint, 1) \
+  F(ChangeBreakOnException, 2) \
+  F(PrepareStep, 3) \
+  F(ClearStepping, 0) \
+  F(DebugEvaluate, 4) \
+  F(DebugEvaluateGlobal, 3) \
+  F(DebugGetLoadedScripts, 0) \
+  F(DebugReferencedBy, 3) \
+  F(DebugConstructedBy, 2) \
+  F(DebugGetPrototype, 1) \
+  F(SystemBreak, 0) \
+  F(DebugDisassembleFunction, 1) \
+  F(DebugDisassembleConstructor, 1) \
+  F(FunctionGetInferredName, 1)
+#else
+#define RUNTIME_FUNCTION_LIST_DEBUGGER_SUPPORT(F)
+#endif
 
 #ifdef DEBUG
 #define RUNTIME_FUNCTION_LIST_DEBUG(F) \
@@ -315,8 +325,10 @@ namespace v8 { namespace internal {
 // via a native call by name (from within JS code).
 
 #define RUNTIME_FUNCTION_LIST(F) \
-  RUNTIME_FUNCTION_LIST_ALWAYS(F) \
-  RUNTIME_FUNCTION_LIST_DEBUG(F)
+  RUNTIME_FUNCTION_LIST_ALWAYS_1(F) \
+  RUNTIME_FUNCTION_LIST_ALWAYS_2(F) \
+  RUNTIME_FUNCTION_LIST_DEBUG(F) \
+  RUNTIME_FUNCTION_LIST_DEBUGGER_SUPPORT(F)
 
 // ----------------------------------------------------------------------------
 // Runtime provides access to all C++ runtime functions.
@@ -355,6 +367,8 @@ class Runtime : public AllStatic {
 
   static int StringMatch(Handle<String> sub, Handle<String> pat, int index);
 
+  static bool IsUpperCaseChar(uint16_t ch);
+
   // TODO(1240886): The following three methods are *not* handle safe,
   // but accept handle arguments. This seems fragile.
 
@@ -367,7 +381,19 @@ class Runtime : public AllStatic {
                                    Handle<Object> value,
                                    PropertyAttributes attr);
 
+  static Object* ForceSetObjectProperty(Handle<JSObject> object,
+                                        Handle<Object> key,
+                                        Handle<Object> value,
+                                        PropertyAttributes attr);
+
+  static Object* ForceDeleteObjectProperty(Handle<JSObject> object,
+                                           Handle<Object> key);
+
   static Object* GetObjectProperty(Handle<Object> object, Handle<Object> key);
+
+  // This function is used in FunctionNameUsing* tests.
+  static Object* FindSharedFunctionInfoInScript(Handle<Script> script,
+                                                int position);
 
   // Helper functions used stubs.
   static void PerformGC(Object* result);

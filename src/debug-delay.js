@@ -43,7 +43,8 @@ Debug.DebugEvent = { Break: 1,
                      Exception: 2,
                      NewFunction: 3,
                      BeforeCompile: 4,
-                     AfterCompile: 5 };
+                     AfterCompile: 5,
+                     ScriptCollected: 6 };
 
 // Types of exceptions that can be broken upon.
 Debug.ExceptionBreak = { All : 0,
@@ -60,6 +61,12 @@ Debug.StepAction = { StepOut: 0,
 Debug.ScriptType = { Native: 0,
                      Extension: 1,
                      Normal: 2 };
+
+// The different types of script compilations matching enum
+// Script::CompilationType in objects.h.
+Debug.ScriptCompilationType = { Host: 0,
+                                Eval: 1,
+                                JSON: 2 };
 
 // The different script break point types.
 Debug.ScriptBreakPointType = { ScriptId: 0,
@@ -216,7 +223,8 @@ function IsBreakPointTriggered(break_id, break_point) {
 // Object representing a script break point. The script is referenced by its
 // script name or script id and the break point is represented as line and
 // column.
-function ScriptBreakPoint(type, script_id_or_name, opt_line, opt_column) {
+function ScriptBreakPoint(type, script_id_or_name, opt_line, opt_column,
+                          opt_groupId) {
   this.type_ = type;
   if (type == Debug.ScriptBreakPointType.ScriptId) {
     this.script_id_ = script_id_or_name;
@@ -225,6 +233,7 @@ function ScriptBreakPoint(type, script_id_or_name, opt_line, opt_column) {
   }
   this.line_ = opt_line || 0;
   this.column_ = opt_column;
+  this.groupId_ = opt_groupId;
   this.hit_count_ = 0;
   this.active_ = true;
   this.condition_ = null;
@@ -234,6 +243,11 @@ function ScriptBreakPoint(type, script_id_or_name, opt_line, opt_column) {
 
 ScriptBreakPoint.prototype.number = function() {
   return this.number_;
+};
+
+
+ScriptBreakPoint.prototype.groupId = function() {
+  return this.groupId_;
 };
 
 
@@ -381,7 +395,7 @@ ScriptBreakPoint.prototype.clear = function () {
 function UpdateScriptBreakPoints(script) {
   for (var i = 0; i < script_break_points.length; i++) {
     if (script_break_points[i].type() == Debug.ScriptBreakPointType.ScriptName &&
-        script_break_points[i].script_name() == script.name) {
+        script_break_points[i].matchesScript(script)) {
       script_break_points[i].set(script);
     }
   }
@@ -452,9 +466,14 @@ Debug.source = function(f) {
   return %FunctionGetSourceCode(f);
 };
 
-Debug.assembler = function(f) {
+Debug.disassemble = function(f) {
   if (!IS_FUNCTION(f)) throw new Error('Parameters have wrong types.');
-  return %FunctionGetAssemblerCode(f);
+  return %DebugDisassembleFunction(f);
+};
+
+Debug.disassembleConstructor = function(f) {
+  if (!IS_FUNCTION(f)) throw new Error('Parameters have wrong types.');
+  return %DebugDisassembleConstructor(f);
 };
 
 Debug.sourcePosition = function(f) {
@@ -604,10 +623,12 @@ Debug.findScriptBreakPoint = function(break_point_number, remove) {
 // Sets a breakpoint in a script identified through id or name at the
 // specified source line and column within that line.
 Debug.setScriptBreakPoint = function(type, script_id_or_name,
-                                     opt_line, opt_column, opt_condition) {
+                                     opt_line, opt_column, opt_condition,
+                                     opt_groupId) {
   // Create script break point object.
   var script_break_point =
-      new ScriptBreakPoint(type, script_id_or_name, opt_line, opt_column);
+      new ScriptBreakPoint(type, script_id_or_name, opt_line, opt_column,
+                           opt_groupId);
 
   // Assign number to the new script break point and add it.
   script_break_point.number_ = next_break_point_number++;
@@ -629,19 +650,19 @@ Debug.setScriptBreakPoint = function(type, script_id_or_name,
 
 Debug.setScriptBreakPointById = function(script_id,
                                          opt_line, opt_column,
-                                         opt_condition) {
+                                         opt_condition, opt_groupId) {
   return this.setScriptBreakPoint(Debug.ScriptBreakPointType.ScriptId,
                                   script_id, opt_line, opt_column,
-                                  opt_condition)
+                                  opt_condition, opt_groupId);
 }
 
 
 Debug.setScriptBreakPointByName = function(script_name,
                                            opt_line, opt_column,
-                                           opt_condition) {
+                                           opt_condition, opt_groupId) {
   return this.setScriptBreakPoint(Debug.ScriptBreakPointType.ScriptName,
                                   script_name, opt_line, opt_column,
-                                  opt_condition)
+                                  opt_condition, opt_groupId);
 }
 
 
@@ -833,7 +854,7 @@ BreakEvent.prototype.toJSONProtocol = function() {
             event: "break",
             body: { invocationText: this.exec_state_.frame(0).invocationText(),
                   }
-          }
+          };
 
   // Add script related information to the event if available.
   var script = this.func().script();
@@ -861,8 +882,7 @@ BreakEvent.prototype.toJSONProtocol = function() {
       o.body.breakpoints.push(number);
     }
   }
-
-  return SimpleObjectToJSON_(o);
+  return JSON.stringify(ObjectToProtocolObject_(o));
 };
 
 
@@ -923,7 +943,7 @@ ExceptionEvent.prototype.toJSONProtocol = function() {
   o.event = "exception";
   o.body = { uncaught: this.uncaught_,
              exception: MakeMirror(this.exception_)
-           }
+           };
            
   // Exceptions might happen whithout any JavaScript frames.
   if (this.exec_state_.frameCount() > 0) {
@@ -977,13 +997,14 @@ CompileEvent.prototype.script = function() {
 
 CompileEvent.prototype.toJSONProtocol = function() {
   var o = new ProtocolMessage();
+  o.running = true;
   if (this.before_) {
     o.event = "beforeCompile";
   } else {
     o.event = "afterCompile";
   }
   o.body = {};
-  o.body.script = MakeScriptObject_(this.script_, true);
+  o.body.script = this.script_;
 
   return o.toJSONProtocol();
 }
@@ -1014,6 +1035,37 @@ NewFunctionEvent.prototype.setBreakPoint = function(p) {
 };
 
 
+function MakeScriptCollectedEvent(exec_state, id) {
+  return new ScriptCollectedEvent(exec_state, id);
+}
+
+
+function ScriptCollectedEvent(exec_state, id) {
+  this.exec_state_ = exec_state;
+  this.id_ = id;
+}
+
+
+ScriptCollectedEvent.prototype.id = function() {
+  return this.id_;
+};
+
+
+ScriptCollectedEvent.prototype.executionState = function() {
+  return this.exec_state_;
+};
+
+
+ScriptCollectedEvent.prototype.toJSONProtocol = function() {
+  var o = new ProtocolMessage();
+  o.running = true;
+  o.event = "scriptCollected";
+  o.body = {};
+  o.body.script = { id: this.id() };
+  return o.toJSONProtocol();
+}
+
+
 function MakeScriptObject_(script, include_source) {
   var o = { id: script.id(),
             name: script.name(),
@@ -1021,6 +1073,9 @@ function MakeScriptObject_(script, include_source) {
             columnOffset: script.columnOffset(),
             lineCount: script.lineCount(),
           };
+  if (!IS_UNDEFINED(script.data())) {
+    o.data = script.data();
+  }
   if (include_source) {
     o.source = script.source();
   }
@@ -1058,6 +1113,14 @@ function ProtocolMessage(request) {
 }
 
 
+ProtocolMessage.prototype.setOption = function(name, value) {
+  if (!this.options_) {
+    this.options_ = {};
+  }
+  this.options_[name] = value;
+}
+
+
 ProtocolMessage.prototype.failed = function(message) {
   this.success = false;
   this.message = message;
@@ -1066,56 +1129,53 @@ ProtocolMessage.prototype.failed = function(message) {
 
 ProtocolMessage.prototype.toJSONProtocol = function() {
   // Encode the protocol header.
-  var json = '{';
-  json += '"seq":' + this.seq;
+  var json = {};
+  json.seq= this.seq;
   if (this.request_seq) {
-    json += ',"request_seq":' + this.request_seq;
+    json.request_seq = this.request_seq;
   }
-  json += ',"type":"' + this.type + '"';
+  json.type = this.type;
   if (this.event) {
-    json += ',"event":' + StringToJSON_(this.event);
+    json.event = this.event;
   }
   if (this.command) {
-    json += ',"command":' + StringToJSON_(this.command);
+    json.command = this.command;
   }
   if (this.success) {
-    json += ',"success":' + this.success;
+    json.success = this.success;
   } else {
-    json += ',"success":false';
+    json.success = false;
   }
   if (this.body) {
-    json += ',"body":';
     // Encode the body part.
-    var serializer = MakeMirrorSerializer(true);
+    var bodyJson;
+    var serializer = MakeMirrorSerializer(true, this.options_);
     if (this.body instanceof Mirror) {
-      json += serializer.serializeValue(this.body);
+      bodyJson = serializer.serializeValue(this.body);
     } else if (this.body instanceof Array) {
-      json += '[';
+      bodyJson = [];
       for (var i = 0; i < this.body.length; i++) {
-        if (i != 0) json += ',';
         if (this.body[i] instanceof Mirror) {
-          json += serializer.serializeValue(this.body[i]);
+          bodyJson.push(serializer.serializeValue(this.body[i]));
         } else {
-          json += SimpleObjectToJSON_(this.body[i], serializer);
+          bodyJson.push(ObjectToProtocolObject_(this.body[i], serializer));
         }
       }
-      json += ']';
     } else {
-      json += SimpleObjectToJSON_(this.body, serializer);
+      bodyJson = ObjectToProtocolObject_(this.body, serializer);
     }
-    json += ',"refs":';
-    json += serializer.serializeReferencedObjects();
+    json.body = bodyJson;
+    json.refs = serializer.serializeReferencedObjects();
   }
   if (this.message) {
-    json += ',"message":' + StringToJSON_(this.message) ;
+    json.message = this.message;
   }
   if (this.running) {
-    json += ',"running":true';
+    json.running = true;
   } else {
-    json += ',"running":false';
+    json.running = false;
   }
-  json += '}';
-  return json;
+  return JSON.stringify(json);
 }
 
 
@@ -1130,7 +1190,7 @@ DebugCommandProcessor.prototype.processDebugJSONRequest = function(json_request)
   try {
     try {
       // Convert the JSON string to an object.
-      request = %CompileString('(' + json_request + ')', 0)();
+      request = %CompileString('(' + json_request + ')', false)();
 
       // Create an initial response.
       response = this.createResponse(request);
@@ -1147,6 +1207,13 @@ DebugCommandProcessor.prototype.processDebugJSONRequest = function(json_request)
         throw new Error('Command not specified');
       }
 
+      // TODO(yurys): remove request.arguments.compactFormat check once
+      // ChromeDevTools are switched to 'inlineRefs'
+      if (request.arguments && (request.arguments.inlineRefs ||
+                                request.arguments.compactFormat)) {
+        response.setOption('inlineRefs', true);
+      }
+
       if (request.command == 'continue') {
         this.continueRequest_(request, response);
       } else if (request.command == 'break') {
@@ -1157,10 +1224,16 @@ DebugCommandProcessor.prototype.processDebugJSONRequest = function(json_request)
         this.changeBreakPointRequest_(request, response);
       } else if (request.command == 'clearbreakpoint') {
         this.clearBreakPointRequest_(request, response);
+      } else if (request.command == 'clearbreakpointgroup') {
+        this.clearBreakPointGroupRequest_(request, response);
       } else if (request.command == 'backtrace') {
         this.backtraceRequest_(request, response);
       } else if (request.command == 'frame') {
         this.frameRequest_(request, response);
+      } else if (request.command == 'scopes') {
+        this.scopesRequest_(request, response);
+      } else if (request.command == 'scope') {
+        this.scopeRequest_(request, response);
       } else if (request.command == 'evaluate') {
         this.evaluateRequest_(request, response);
       } else if (request.command == 'lookup') {
@@ -1268,13 +1341,15 @@ DebugCommandProcessor.prototype.setBreakPointRequest_ =
       true : request.arguments.enabled;
   var condition = request.arguments.condition;
   var ignoreCount = request.arguments.ignoreCount;
+  var groupId = request.arguments.groupId;
 
   // Check for legal arguments.
-  if (!type || !target) {
+  if (!type || IS_UNDEFINED(target)) {
     response.failed('Missing argument "type" or "target"');
     return;
   }
-  if (type != 'function' && type != 'script' && type != 'scriptId') {
+  if (type != 'function' && type != 'handle' &&
+      type != 'script' && type != 'scriptId') {
     response.failed('Illegal type "' + type + '"');
     return;
   }
@@ -1303,13 +1378,28 @@ DebugCommandProcessor.prototype.setBreakPointRequest_ =
 
     // Set function break point.
     break_point_number = Debug.setBreakPoint(f, line, column, condition);
+  } else if (type == 'handle') {
+    // Find the object pointed by the specified handle.
+    var handle = parseInt(target, 10);
+    var mirror = LookupMirror(handle);
+    if (!mirror) {
+      return response.failed('Object #' + handle + '# not found');
+    }
+    if (!mirror.isFunction()) {
+      return response.failed('Object #' + handle + '# is not a function');
+    }
+
+    // Set function break point.
+    break_point_number = Debug.setBreakPoint(mirror.value(),
+                                             line, column, condition);
   } else if (type == 'script') {
     // set script break point.
     break_point_number =
-        Debug.setScriptBreakPointByName(target, line, column, condition);
+        Debug.setScriptBreakPointByName(target, line, column, condition,
+                                        groupId);
   } else {  // type == 'scriptId.
     break_point_number =
-        Debug.setScriptBreakPointById(target, line, column, condition);
+        Debug.setScriptBreakPointById(target, line, column, condition, groupId);
   }
 
   // Set additional break point properties.
@@ -1382,6 +1472,40 @@ DebugCommandProcessor.prototype.changeBreakPointRequest_ = function(request, res
 }
 
 
+DebugCommandProcessor.prototype.clearBreakPointGroupRequest_ = function(request, response) {
+  // Check for legal request.
+  if (!request.arguments) {
+    response.failed('Missing arguments');
+    return;
+  }
+
+  // Pull out arguments.
+  var group_id = request.arguments.groupId;
+
+  // Check for legal arguments.
+  if (!group_id) {
+    response.failed('Missing argument "groupId"');
+    return;
+  }
+  
+  var cleared_break_points = [];
+  var new_script_break_points = [];
+  for (var i = 0; i < script_break_points.length; i++) {
+    var next_break_point = script_break_points[i];
+    if (next_break_point.groupId() == group_id) {
+      cleared_break_points.push(next_break_point.number());
+      next_break_point.clear();
+    } else {
+      new_script_break_points.push(next_break_point);
+    }
+  }
+  script_break_points = new_script_break_points;
+
+  // Add the cleared break point numbers to the response.
+  response.body = { breakpoints: cleared_break_points };
+}
+
+
 DebugCommandProcessor.prototype.clearBreakPointRequest_ = function(request, response) {
   // Check for legal request.
   if (!request.arguments) {
@@ -1424,12 +1548,18 @@ DebugCommandProcessor.prototype.backtraceRequest_ = function(request, response) 
 
   // Get the range from the arguments.
   if (request.arguments) {
-    from_index = request.arguments.fromFrame;
-    if (from_index < 0) {
-      return response.failed('Invalid frame number');
+    if (request.arguments.fromFrame) {
+      from_index = request.arguments.fromFrame;
     }
-    to_index = request.arguments.toFrame;
-    if (to_index < 0) {
+    if (request.arguments.toFrame) {
+      to_index = request.arguments.toFrame;
+    }
+    if (request.arguments.bottom) {
+      var tmp_index = total_frames - from_index;
+      from_index = total_frames - to_index
+      to_index = tmp_index;
+    }
+    if (from_index < 0 || to_index < 0) {
       return response.failed('Invalid frame number');
     }
   }
@@ -1469,7 +1599,7 @@ DebugCommandProcessor.prototype.frameRequest_ = function(request, response) {
 
   // With no arguments just keep the selected frame.
   if (request.arguments) {
-    index = request.arguments.number;
+    var index = request.arguments.number;
     if (index < 0 || this.exec_state_.frameCount() <= index) {
       return response.failed('Invalid frame number');
     }
@@ -1477,6 +1607,67 @@ DebugCommandProcessor.prototype.frameRequest_ = function(request, response) {
     this.exec_state_.setSelectedFrame(request.arguments.number);
   }
   response.body = this.exec_state_.frame();
+};
+
+
+DebugCommandProcessor.prototype.frameForScopeRequest_ = function(request) {
+  // Get the frame for which the scope or scopes are requested. With no frameNumber
+  // argument use the currently selected frame.
+  if (request.arguments && !IS_UNDEFINED(request.arguments.frameNumber)) {
+    frame_index = request.arguments.frameNumber;
+    if (frame_index < 0 || this.exec_state_.frameCount() <= frame_index) {
+      return response.failed('Invalid frame number');
+    }
+    return this.exec_state_.frame(frame_index);
+  } else {
+    return this.exec_state_.frame();
+  }
+}
+
+
+DebugCommandProcessor.prototype.scopesRequest_ = function(request, response) {
+  // No frames no scopes.
+  if (this.exec_state_.frameCount() == 0) {
+    return response.failed('No scopes');
+  }
+
+  // Get the frame for which the scopes are requested.
+  var frame = this.frameForScopeRequest_(request);
+  
+  // Fill all scopes for this frame.
+  var total_scopes = frame.scopeCount();
+  var scopes = [];
+  for (var i = 0; i < total_scopes; i++) {
+    scopes.push(frame.scope(i));
+  }
+  response.body = {
+    fromScope: 0,
+    toScope: total_scopes,
+    totalScopes: total_scopes,
+    scopes: scopes
+  }
+};
+
+
+DebugCommandProcessor.prototype.scopeRequest_ = function(request, response) {
+  // No frames no scopes.
+  if (this.exec_state_.frameCount() == 0) {
+    return response.failed('No scopes');
+  }
+
+  // Get the frame for which the scope is requested.
+  var frame = this.frameForScopeRequest_(request);
+
+  // With no scope argument just return top scope.
+  var scope_index = 0;
+  if (request.arguments && !IS_UNDEFINED(request.arguments.number)) {
+    scope_index = %ToNumber(request.arguments.number);
+    if (scope_index < 0 || frame.scopeCount() <= scope_index) {
+      return response.failed('Invalid scope number');
+    }
+  }
+
+  response.body = frame.scope(scope_index);
 };
 
 
@@ -1547,20 +1738,30 @@ DebugCommandProcessor.prototype.lookupRequest_ = function(request, response) {
   }
 
   // Pull out arguments.
-  var handle = request.arguments.handle;
+  var handles = request.arguments.handles;
 
   // Check for legal arguments.
-  if (IS_UNDEFINED(handle)) {
-    return response.failed('Argument "handle" missing');
+  if (IS_UNDEFINED(handles)) {
+    return response.failed('Argument "handles" missing');
   }
 
-  // Lookup handle.
-  var mirror = LookupMirror(handle);
-  if (mirror) {
-    response.body = mirror;
-  } else {
-    return response.failed('Object #' + handle + '# not found');
+  // Set 'includeSource' option for script lookup.
+  if (!IS_UNDEFINED(request.arguments.includeSource)) {
+    includeSource = %ToBoolean(request.arguments.includeSource);
+    response.setOption('includeSource', includeSource);
   }
+  
+  // Lookup handles.
+  var mirrors = {};
+  for (var i = 0; i < handles.length; i++) {
+    var handle = handles[i];
+    var mirror = LookupMirror(handle);
+    if (!mirror) {
+      return response.failed('Object #' + handle + '# not found');
+    }
+    mirrors[handle] = mirror;
+  }
+  response.body = mirrors;
 };
 
 
@@ -1646,6 +1847,7 @@ DebugCommandProcessor.prototype.sourceRequest_ = function(request, response) {
 DebugCommandProcessor.prototype.scriptsRequest_ = function(request, response) {
   var types = ScriptTypeFlag(Debug.ScriptType.Normal);
   var includeSource = false;
+  var idsToInclude = null;
   if (request.arguments) {
     // Pull out arguments.
     if (!IS_UNDEFINED(request.arguments.types)) {
@@ -1657,6 +1859,15 @@ DebugCommandProcessor.prototype.scriptsRequest_ = function(request, response) {
     
     if (!IS_UNDEFINED(request.arguments.includeSource)) {
       includeSource = %ToBoolean(request.arguments.includeSource);
+      response.setOption('includeSource', includeSource);
+    }
+    
+    if (IS_ARRAY(request.arguments.ids)) {
+      idsToInclude = {};
+      var ids = request.arguments.ids;
+      for (var i = 0; i < ids.length; i++) {
+        idsToInclude[ids[i]] = true;
+      }
     }
   }
 
@@ -1666,23 +1877,11 @@ DebugCommandProcessor.prototype.scriptsRequest_ = function(request, response) {
   response.body = [];
 
   for (var i = 0; i < scripts.length; i++) {
+    if (idsToInclude && !idsToInclude[scripts[i].id]) {
+      continue;
+    }
     if (types & ScriptTypeFlag(scripts[i].type)) {
-      var script = {};
-      if (scripts[i].name) {
-        script.name = scripts[i].name;
-      }
-      script.id = scripts[i].id;
-      script.lineOffset = scripts[i].line_offset;
-      script.columnOffset = scripts[i].column_offset;
-      script.lineCount = scripts[i].lineCount();
-      if (includeSource) {
-        script.source = scripts[i].source;
-      } else {
-        script.sourceStart = scripts[i].source.substring(0, 80);
-      }
-      script.sourceLength = scripts[i].source.length;
-      script.type = scripts[i].type;
-      response.body.push(script);
+      response.body.push(MakeMirror(scripts[i]));
     }
   }
 };
@@ -1757,97 +1956,82 @@ DebugCommandProcessor.prototype.formatCFrame = function(cframe_value) {
 
 
 /**
- * Convert an Object to its JSON representation (see http://www.json.org/).
- * This implementation simply runs through all string property names and adds
- * each property to the JSON representation for some predefined types. For type
- * "object" the function calls itself recursively unless the object has the
- * function property "toJSONProtocol" in which case that is used. This is not
- * a general implementation but sufficient for the debugger. Note that circular
- * structures will cause infinite recursion.
- * @param {Object} object The object to format as JSON
+ * Convert an Object to its debugger protocol representation. The representation
+ * may be serilized to a JSON object using JSON.stringify().
+ * This implementation simply runs through all string property names, converts
+ * each property value to a protocol value and adds the property to the result
+ * object. For type "object" the function will be called recursively. Note that
+ * circular structures will cause infinite recursion.
+ * @param {Object} object The object to format as protocol object.
  * @param {MirrorSerializer} mirror_serializer The serializer to use if any
  *     mirror objects are encountered.
- * @return {string} JSON formatted object value
+ * @return {Object} Protocol object value.
  */
-function SimpleObjectToJSON_(object, mirror_serializer) {
-  var content = [];
+function ObjectToProtocolObject_(object, mirror_serializer) {
+  var content = {};
   for (var key in object) {
     // Only consider string keys.
     if (typeof key == 'string') {
-      var property_value = object[key];
-
       // Format the value based on its type.
-      var property_value_json;
-      switch (typeof property_value) {
-        case 'object':
-          if (property_value instanceof Mirror) {
-            property_value_json = mirror_serializer.serializeValue(property_value);
-          } else if (typeof property_value.toJSONProtocol == 'function') {
-            property_value_json = property_value.toJSONProtocol(true)
-          } else if (IS_ARRAY(property_value)){
-            property_value_json = SimpleArrayToJSON_(property_value, mirror_serializer);
-          } else {
-            property_value_json = SimpleObjectToJSON_(property_value, mirror_serializer);
-          }
-          break;
-
-        case 'boolean':
-          property_value_json = BooleanToJSON_(property_value);
-          break;
-
-        case 'number':
-          property_value_json = NumberToJSON_(property_value);
-          break;
-
-        case 'string':
-          property_value_json = StringToJSON_(property_value);
-          break;
-
-        default:
-          property_value_json = null;
-      }
-
+      var property_value_json = ValueToProtocolValue_(object[key],
+                                                      mirror_serializer);
       // Add the property if relevant.
-      if (property_value_json) {
-        content.push(StringToJSON_(key) + ':' + property_value_json);
+      if (!IS_UNDEFINED(property_value_json)) {
+        content[key] = property_value_json;
       }
     }
   }
-
-  // Make JSON object representation.
-  return '{' + content.join(',') + '}';
+  
+  return content;
 }
 
+
 /**
- * Convert an array to its JSON representation. This is a VERY simple
- * implementation just to support what is needed for the debugger.
- * @param {Array} array The array to format as JSON
+ * Convert an array to its debugger protocol representation. It will convert
+ * each array element to a protocol value.
+ * @param {Array} array The array to format as protocol array.
  * @param {MirrorSerializer} mirror_serializer The serializer to use if any
  *     mirror objects are encountered.
- * @return {string} JSON formatted array value
+ * @return {Array} Protocol array value.
  */
-function SimpleArrayToJSON_(array, mirror_serializer) {
-  // Make JSON array representation.
-  var json = '[';
+function ArrayToProtocolArray_(array, mirror_serializer) {
+  var json = [];
   for (var i = 0; i < array.length; i++) {
-    if (i != 0) {
-      json += ',';
-    }
-    var elem = array[i];
-    if (elem instanceof Mirror) {
-      json += mirror_serializer.serializeValue(elem);
-    } else if (IS_OBJECT(elem))  {
-      json += SimpleObjectToJSON_(elem);
-    } else if (IS_BOOLEAN(elem)) {
-      json += BooleanToJSON_(elem);
-    } else if (IS_NUMBER(elem)) {
-      json += NumberToJSON_(elem);
-    } else if (IS_STRING(elem)) {
-      json += StringToJSON_(elem);
-    } else {
-      json += elem;
-    }
+    json.push(ValueToProtocolValue_(array[i], mirror_serializer));
   }
-  json += ']';
+  return json;
+}
+
+
+/**
+ * Convert a value to its debugger protocol representation. 
+ * @param {*} value The value to format as protocol value.
+ * @param {MirrorSerializer} mirror_serializer The serializer to use if any
+ *     mirror objects are encountered.
+ * @return {*} Protocol value.
+ */
+function ValueToProtocolValue_(value, mirror_serializer) {
+  // Format the value based on its type.
+  var json;
+  switch (typeof value) {
+    case 'object':
+      if (value instanceof Mirror) {
+        json = mirror_serializer.serializeValue(value);
+      } else if (IS_ARRAY(value)){
+        json = ArrayToProtocolArray_(value, mirror_serializer);
+      } else {
+        json = ObjectToProtocolObject_(value, mirror_serializer);
+      }
+      break;
+
+    case 'boolean':
+    case 'string':
+    case 'number':
+      json = value;
+      break
+
+    default:
+      json = null;
+  }
   return json;
 }

@@ -30,7 +30,8 @@
 
 #include "zone.h"
 
-namespace v8 { namespace internal {
+namespace v8 {
+namespace internal {
 
 class UseCount BASE_EMBEDDED {
  public:
@@ -136,6 +137,18 @@ class Variable: public ZoneObject {
                      // in a context
   };
 
+  enum Kind {
+    NORMAL,
+    THIS,
+    ARGUMENTS
+  };
+
+  Variable(Scope* scope,
+           Handle<String> name,
+           Mode mode,
+           bool is_valid_lhs,
+           Kind kind);
+
   // Printing support
   static const char* Mode2String(Mode mode);
 
@@ -149,9 +162,7 @@ class Variable: public ZoneObject {
   // be the global scope). scope() is NULL in that case. Currently the
   // scope is only used to follow the context chain length.
   Scope* scope() const  { return scope_; }
-  // If this assertion fails it means that some code has tried to
-  // treat the special this variable as an ordinary variable with
-  // the name "this".
+
   Handle<String> name() const  { return name_; }
   Mode mode() const  { return mode_; }
   bool is_accessed_from_inner_scope() const  {
@@ -171,7 +182,8 @@ class Variable: public ZoneObject {
   }
 
   bool is_global() const;
-  bool is_this() const { return is_this_; }
+  bool is_this() const { return kind_ == THIS; }
+  bool is_arguments() const { return kind_ == ARGUMENTS; }
 
   Variable* local_if_not_shadowed() const {
     ASSERT(mode_ == DYNAMIC_LOCAL && local_if_not_shadowed_ != NULL);
@@ -188,14 +200,11 @@ class Variable: public ZoneObject {
   SmiAnalysis* type() { return &type_; }
 
  private:
-  Variable(Scope* scope, Handle<String> name, Mode mode, bool is_valid_LHS,
-      bool is_this);
-
   Scope* scope_;
   Handle<String> name_;
   Mode mode_;
   bool is_valid_LHS_;
-  bool is_this_;
+  Kind kind_;
 
   Variable* local_if_not_shadowed_;
 
@@ -208,13 +217,10 @@ class Variable: public ZoneObject {
   SmiAnalysis type_;
 
   // Code generation.
-  // rewrite_ is usually a Slot or a Property, but maybe any expression.
+  // rewrite_ is usually a Slot or a Property, but may be any expression.
   Expression* rewrite_;
 
-  friend class VariableProxy;
-  friend class Scope;
-  friend class LocalsMap;
-  friend class AstBuildingParser;
+  friend class Scope;  // Has explicit access to rewrite_.
 };
 
 

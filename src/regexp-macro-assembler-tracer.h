@@ -25,10 +25,11 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-#ifndef REGEXP_MACRO_ASSEMBLER_TRACER_H_
-#define REGEXP_MACRO_ASSEMBLER_TRACER_H_
+#ifndef V8_REGEXP_MACRO_ASSEMBLER_TRACER_H_
+#define V8_REGEXP_MACRO_ASSEMBLER_TRACER_H_
 
-namespace v8 { namespace internal {
+namespace v8 {
+namespace internal {
 
 // Decorator on a RegExpMacroAssembler that write all calls.
 class RegExpMacroAssemblerTracer: public RegExpMacroAssembler {
@@ -42,7 +43,6 @@ class RegExpMacroAssemblerTracer: public RegExpMacroAssembler {
   virtual void Backtrack();
   virtual void Bind(Label* label);
   virtual void CheckAtStart(Label* on_at_start);
-  virtual void CheckBitmap(uc16 start, Label* bitmap, Label* on_zero);
   virtual void CheckCharacter(uint32_t c, Label* on_equal);
   virtual void CheckCharacterAfterAnd(uint32_t c,
                                       uint32_t and_with,
@@ -72,19 +72,6 @@ class RegExpMacroAssemblerTracer: public RegExpMacroAssembler {
                                           int cp_offset,
                                           bool check_offset,
                                           Label* on_no_match);
-  virtual void DispatchByteMap(
-      uc16 start,
-      Label* byte_map,
-      const Vector<Label*>& destinations);
-  virtual void DispatchHalfNibbleMap(
-      uc16 start,
-      Label* half_nibble_map,
-      const Vector<Label*>& destinations);
-  virtual void DispatchHighByteMap(
-      byte start,
-      Label* byte_map,
-      const Vector<Label*>& destinations);
-  virtual void EmitOrLink(Label* label);
   virtual void Fail();
   virtual Handle<Object> GetCode(Handle<String> source);
   virtual void GoTo(Label* label);
@@ -115,4 +102,4 @@ class RegExpMacroAssemblerTracer: public RegExpMacroAssembler {
 
 }}  // namespace v8::internal
 
-#endif  // REGEXP_MACRO_ASSEMBLER_TRACER_H_
+#endif  // V8_REGEXP_MACRO_ASSEMBLER_TRACER_H_

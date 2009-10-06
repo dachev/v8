@@ -35,7 +35,7 @@
 // Set the String function and constructor.
 %SetCode($String, function(x) {
   var value = %_ArgumentsLength() == 0 ? '' : ToString(x);
-  if (%IsConstructCall()) {
+  if (%_IsConstructCall()) {
     %_SetValueOf(this, value);
   } else {
     return value;
@@ -46,7 +46,7 @@
 
 // ECMA-262 section 15.5.4.2
 function StringToString() {
-  if (!IS_STRING(this) && !%HasStringClass(this))
+  if (!IS_STRING(this) && !IS_STRING_WRAPPER(this))
     throw new $TypeError('String.prototype.toString is not generic');
   return %_ValueOf(this);
 }
@@ -54,7 +54,7 @@ function StringToString() {
 
 // ECMA-262 section 15.5.4.3
 function StringValueOf() {
-  if (!IS_STRING(this) && !%HasStringClass(this))
+  if (!IS_STRING(this) && !IS_STRING_WRAPPER(this))
     throw new $TypeError('String.prototype.valueOf is not generic');
   return %_ValueOf(this);
 }
@@ -120,20 +120,26 @@ function StringIndexOf(searchString /* position */) {  // length == 1
 // ECMA-262 section 15.5.4.8
 function StringLastIndexOf(searchString /* position */) {  // length == 1
   var sub = ToString(this);
+  var subLength = sub.length;
   var pat = ToString(searchString);
-  var index = (%_ArgumentsLength() > 1)
-      ? ToNumber(%_Arguments(1) /* position */)
-      : $NaN;
-  var firstIndex;
-  if ($isNaN(index)) {
-    firstIndex = sub.length - pat.length;
-  } else {
-    firstIndex = TO_INTEGER(index);
-    if (firstIndex + pat.length > sub.length) {
-      firstIndex = sub.length - pat.length;
+  var patLength = pat.length;
+  var index = subLength - patLength;
+  if (%_ArgumentsLength() > 1) {
+    var position = ToNumber(%_Arguments(1));
+    if (!$isNaN(position)) {
+      position = TO_INTEGER(position);
+      if (position < 0) {
+        position = 0;
+      }
+      if (position + patLength < subLength) {
+        index = position
+      }
     }
   }
-  return %StringLastIndexOf(sub, pat, firstIndex);
+  if (index < 0) {
+    return -1;
+  }
+  return %StringLastIndexOf(sub, pat, index);
 }
 
 
@@ -304,6 +310,8 @@ function ExpandReplacement(string, subject, matchInfo, builder) {
           builder.add('$');
           --position;
         }
+      } else {
+        builder.add('$');
       }
     } else {
       builder.add('$');
@@ -362,10 +370,10 @@ function addCaptureString(builder, matchInfo, index) {
 //     'abcd'.replace(/(.)/g, function() { return RegExp.$1; }
 // should be 'abcd' and not 'dddd' (or anything else).
 function StringReplaceRegExpWithFunction(subject, regexp, replace) {
-  var result = new ReplaceResultBuilder(subject);
   var lastMatchInfo = DoRegExpExec(regexp, subject, 0);
   if (IS_NULL(lastMatchInfo)) return subject;
 
+  var result = new ReplaceResultBuilder(subject);
   // There's at least one match.  If the regexp is global, we have to loop
   // over all matches.  The loop is not in C++ code here like the one in
   // RegExp.prototype.exec, because of the interleaved function application.
@@ -425,7 +433,7 @@ function ApplyReplacementFunction(replace, lastMatchInfo, subject) {
   if (m == 1) {
     var s = CaptureString(subject, lastMatchInfo, 0);
     // Don't call directly to avoid exposing the built-in global object.
-    return ToString(replace.call(null, s, index, subject));
+    return replace.call(null, s, index, subject);
   }
   var parameters = $Array(m + 2);
   for (var j = 0; j < m; j++) {
@@ -433,7 +441,7 @@ function ApplyReplacementFunction(replace, lastMatchInfo, subject) {
   }
   parameters[j] = index;
   parameters[j + 1] = subject;
-  return ToString(replace.apply(null, parameters));
+  return replace.apply(null, parameters);
 }
 
 
@@ -490,10 +498,8 @@ function StringSlice(start, end) {
 // ECMA-262 section 15.5.4.14
 function StringSplit(separator, limit) {
   var subject = ToString(this);
-  var result = [];
-  var lim = (limit === void 0) ? 0xffffffff : ToUint32(limit);
-
-  if (lim === 0) return result;
+  limit = (limit === void 0) ? 0xffffffff : ToUint32(limit);
+  if (limit === 0) return [];
 
   // ECMA-262 says that if separator is undefined, the result should
   // be an array of size 1 containing the entire string.  SpiderMonkey
@@ -501,27 +507,30 @@ function StringSplit(separator, limit) {
   // undefined is explicitly given, they convert it to a string and
   // use that.  We do as SpiderMonkey and KJS.
   if (%_ArgumentsLength() === 0) {
-    result[result.length] = subject;
-    return result;
+    return [subject];
   }
 
   var length = subject.length;
-  var currentIndex = 0;
-  var startIndex = 0;
-
-  var sep;
   if (IS_REGEXP(separator)) {
-    sep = separator;
-    %_Log('regexp', 'regexp-split,%0S,%1r', [subject, sep]);
+    %_Log('regexp', 'regexp-split,%0S,%1r', [subject, separator]);
   } else {
-    sep = ToString(separator);
+    separator = ToString(separator);
+    // If the separator string is empty then return the elements in the subject.
+    if (separator.length == 0) {
+      var result = $Array(length);
+      for (var i = 0; i < length; i++) result[i] = subject[i];
+      return result;
+    }
   }
 
   if (length === 0) {
-    if (splitMatch(sep, subject, 0, 0) != null) return result;
-    result[result.length] = subject;
-    return result;
+    if (splitMatch(separator, subject, 0, 0) != null) return [];
+    return [subject];
   }
+
+  var currentIndex = 0;
+  var startIndex = 0;
+  var result = [];
 
   while (true) {
 
@@ -530,7 +539,7 @@ function StringSplit(separator, limit) {
       return result;
     }
 
-    var lastMatchInfo = splitMatch(sep, subject, currentIndex, startIndex);
+    var lastMatchInfo = splitMatch(separator, subject, currentIndex, startIndex);
 
     if (IS_NULL(lastMatchInfo)) {
       result[result.length] = subject.slice(currentIndex, length);
@@ -545,21 +554,18 @@ function StringSplit(separator, limit) {
       continue;
     }
 
-    result[result.length] =
-        SubString(subject, currentIndex, lastMatchInfo[CAPTURE0]);
-    if (result.length === lim) return result;
+    result[result.length] = SubString(subject, currentIndex, lastMatchInfo[CAPTURE0]);
+    if (result.length === limit) return result;
 
     for (var i = 2; i < NUMBER_OF_CAPTURES(lastMatchInfo); i += 2) {
       var start = lastMatchInfo[CAPTURE(i)];
       var end = lastMatchInfo[CAPTURE(i + 1)];
       if (start != -1 && end != -1) {
-        result[result.length] = SubString(subject,
-                                          lastMatchInfo[CAPTURE(i)],
-                                          lastMatchInfo[CAPTURE(i + 1)]);
+        result[result.length] = SubString(subject, start, end);
       } else {
         result[result.length] = void 0;
       }
-      if (result.length === lim) return result;
+      if (result.length === limit) return result;
     }
 
     startIndex = currentIndex = endIndex;
@@ -810,6 +816,11 @@ ReplaceResultBuilder.prototype.generate = function() {
 }
 
 
+function StringToJSON(key) {
+  return CheckJSONPrimitive(this.valueOf());
+}
+
+
 // -------------------------------------------------------------------
 
 function SetupString() {
@@ -824,7 +835,7 @@ function SetupString() {
 
 
   // Setup the non-enumerable functions on the String prototype object.
-  InstallFunctions($String.prototype, DONT_ENUM, $Array(
+  InstallFunctionsOnHiddenPrototype($String.prototype, DONT_ENUM, $Array(
     "valueOf", StringValueOf,
     "toString", StringToString,
     "charAt", StringCharAt,
@@ -856,7 +867,8 @@ function SetupString() {
     "small", StringSmall,
     "strike", StringStrike,
     "sub", StringSub,
-    "sup", StringSup
+    "sup", StringSup,
+    "toJSON", StringToJSON
   ));
 }
 

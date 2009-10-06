@@ -28,15 +28,20 @@
 #include "v8.h"
 
 #include "ast.h"
+#include "func-name-inferrer.h"
 #include "scopes.h"
 #include "rewriter.h"
 
-namespace v8 { namespace internal {
+namespace v8 {
+namespace internal {
 
 
 class AstOptimizer: public AstVisitor {
  public:
-  explicit AstOptimizer() {
+  explicit AstOptimizer() : has_function_literal_(false) {}
+  explicit AstOptimizer(Handle<String> enclosing_name)
+      : has_function_literal_(false) {
+    func_name_inferrer_.PushEnclosingName(enclosing_name);
   }
 
   void Optimize(ZoneList<Statement*>* statements);
@@ -45,6 +50,8 @@ class AstOptimizer: public AstVisitor {
   // Used for loop condition analysis.  Cleared before visiting a loop
   // condition, set when a function literal is visited.
   bool has_function_literal_;
+  // Helper object for function name inferring.
+  FuncNameInferrer func_name_inferrer_;
 
   // Helpers
   void OptimizeArguments(ZoneList<Expression*>* arguments);
@@ -52,7 +59,7 @@ class AstOptimizer: public AstVisitor {
   // Node visitors.
 #define DEF_VISIT(type) \
   virtual void Visit##type(type* node);
-  NODE_LIST(DEF_VISIT)
+  AST_NODE_LIST(DEF_VISIT)
 #undef DEF_VISIT
 
   DISALLOW_COPY_AND_ASSIGN(AstOptimizer);
@@ -185,8 +192,12 @@ void AstOptimizer::VisitDebuggerStatement(DebuggerStatement* node) {
 
 
 void AstOptimizer::VisitFunctionLiteral(FunctionLiteral* node) {
-  USE(node);
   has_function_literal_ = true;
+
+  if (node->name()->length() == 0) {
+    // Anonymous function.
+    func_name_inferrer_.AddFunction(node);
+  }
 }
 
 
@@ -216,6 +227,11 @@ void AstOptimizer::VisitVariableProxy(VariableProxy* node) {
     } else if (node->type()->IsLikelySmi()) {
       var->type()->SetAsLikelySmi();
     }
+
+    if (!var->is_this() &&
+        !Heap::result_symbol()->Equals(*var->name())) {
+      func_name_inferrer_.PushName(var->name());
+    }
   }
 }
 
@@ -224,6 +240,11 @@ void AstOptimizer::VisitLiteral(Literal* node) {
   Handle<Object> literal = node->handle();
   if (literal->IsSmi()) {
     node->type()->SetAsLikelySmi();
+  } else if (literal->IsString()) {
+    Handle<String> lit_str(Handle<String>::cast(literal));
+    if (!Heap::prototype_symbol()->Equals(*lit_str)) {
+      func_name_inferrer_.PushName(lit_str);
+    }
   }
 }
 
@@ -239,9 +260,10 @@ void AstOptimizer::VisitArrayLiteral(ArrayLiteral* node) {
   }
 }
 
-
 void AstOptimizer::VisitObjectLiteral(ObjectLiteral* node) {
   for (int i = 0; i < node->properties()->length(); i++) {
+    ScopedFuncNameInferrer scoped_fni(&func_name_inferrer_);
+    scoped_fni.Enter();
     Visit(node->properties()->at(i)->key());
     Visit(node->properties()->at(i)->value());
   }
@@ -255,11 +277,17 @@ void AstOptimizer::VisitCatchExtensionObject(CatchExtensionObject* node) {
 
 
 void AstOptimizer::VisitAssignment(Assignment* node) {
+  ScopedFuncNameInferrer scoped_fni(&func_name_inferrer_);
   switch (node->op()) {
     case Token::INIT_VAR:
     case Token::INIT_CONST:
     case Token::ASSIGN:
       // No type can be infered from the general assignment.
+
+      // Don't infer if it is "a = function(){...}();"-like expression.
+      if (node->value()->AsCall() == NULL) {
+        scoped_fni.Enter();
+      }
       break;
     case Token::ASSIGN_BIT_OR:
     case Token::ASSIGN_BIT_XOR:
@@ -368,6 +396,12 @@ void AstOptimizer::VisitCallNew(CallNew* node) {
 
 
 void AstOptimizer::VisitCallRuntime(CallRuntime* node) {
+  ScopedFuncNameInferrer scoped_fni(&func_name_inferrer_);
+  if (Factory::InitializeVarGlobal_symbol()->Equals(*node->name()) &&
+      node->arguments()->length() >= 2 &&
+      node->arguments()->at(1)->AsFunctionLiteral() != NULL) {
+      scoped_fni.Enter();
+  }
   OptimizeArguments(node->arguments());
 }
 
@@ -523,7 +557,7 @@ class Processor: public AstVisitor {
   // Node visitors.
 #define DEF_VISIT(type) \
   virtual void Visit##type(type* node);
-  NODE_LIST(DEF_VISIT)
+  AST_NODE_LIST(DEF_VISIT)
 #undef DEF_VISIT
 };
 
@@ -774,6 +808,7 @@ void Processor::VisitThisFunction(ThisFunction* node) {
 
 
 bool Rewriter::Process(FunctionLiteral* function) {
+  HistogramTimerScope timer(&Counters::rewriting);
   Scope* scope = function->scope();
   if (scope->is_function_scope()) return true;
 
@@ -794,13 +829,11 @@ bool Rewriter::Optimize(FunctionLiteral* function) {
   ZoneList<Statement*>* body = function->body();
 
   if (FLAG_optimize_ast && !body->is_empty()) {
-    Scope* scope = function->scope();
-    if (!scope->is_global_scope()) {
-      AstOptimizer optimizer;
-      optimizer.Optimize(body);
-      if (optimizer.HasStackOverflow()) {
-        return false;
-      }
+    HistogramTimerScope timer(&Counters::ast_optimization);
+    AstOptimizer optimizer(function->name());
+    optimizer.Optimize(body);
+    if (optimizer.HasStackOverflow()) {
+      return false;
     }
   }
   return true;

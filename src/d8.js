@@ -25,8 +25,6 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-// How crappy is it that I have to implement completely basic stuff
-// like this myself?  Answer: very.
 String.prototype.startsWith = function (str) {
   if (str.length > this.length)
     return false;
@@ -91,6 +89,20 @@ Debug.DebugEvent = { Break: 1,
 Debug.ScriptType = { Native: 0,
                      Extension: 1,
                      Normal: 2 };
+
+
+// The different types of script compilations matching enum
+// Script::CompilationType in objects.h.
+Debug.ScriptCompilationType = { Host: 0,
+                                Eval: 1,
+                                JSON: 2 };
+
+
+// The different types of scopes matching constants runtime.cc.
+Debug.ScopeType = { Global: 0,
+                    Local: 1,
+                    With: 2,
+                    Closure: 3 };
 
 
 // Current debug state.
@@ -290,6 +302,14 @@ function DebugRequest(cmd_line) {
       this.request_ = this.frameCommandToJSONRequest_(args);
       break;
       
+    case 'scopes':
+      this.request_ = this.scopesCommandToJSONRequest_(args);
+      break;
+      
+    case 'scope':
+      this.request_ = this.scopeCommandToJSONRequest_(args);
+      break;
+      
     case 'print':
     case 'p':
       this.request_ = this.printCommandToJSONRequest_(args);
@@ -389,13 +409,17 @@ DebugRequest.prototype.createRequest = function(command) {
 
 // Create a JSON request for the evaluation command.
 DebugRequest.prototype.makeEvaluateJSONRequest_ = function(expression) {
+  // Global varaible used to store whether a handle was requested.
+  lookup_handle = null;
   // Check if the expression is a handle id in the form #<handle>#.
   var handle_match = expression.match(/^#([0-9]*)#$/);
   if (handle_match) {
+    // Remember the handle requested in a global variable.
+    lookup_handle = parseInt(handle_match[1]);
     // Build a lookup request.
     var request = this.createRequest('lookup');
     request.arguments = {};
-    request.arguments.handle = parseInt(handle_match[1]);
+    request.arguments.handles = [ lookup_handle ];
     return request.toJSONProtocol();
   } else {
     // Build an evaluate request.
@@ -498,9 +522,26 @@ DebugRequest.prototype.stepCommandToJSONRequest_ = function(args) {
 DebugRequest.prototype.backtraceCommandToJSONRequest_ = function(args) {
   // Build a backtrace request from the text command.
   var request = this.createRequest('backtrace');
+  
+  // Default is to show top 10 frames.
+  request.arguments = {};
+  request.arguments.fromFrame = 0;
+  request.arguments.toFrame = 10;
+
   args = args.split(/\s*[ ]+\s*/g);
-  if (args.length == 2) {
-    request.arguments = {};
+  if (args.length == 1 && args[0].length > 0) {
+    var frameCount = parseInt(args[0]);
+    if (frameCount > 0) {
+      // Show top frames.
+      request.arguments.fromFrame = 0;
+      request.arguments.toFrame = frameCount;
+    } else {
+      // Show bottom frames.
+      request.arguments.fromFrame = 0;
+      request.arguments.toFrame = -frameCount;
+      request.arguments.bottom = true;
+    }
+  } else if (args.length == 2) {
     var fromFrame = parseInt(args[0]);
     var toFrame = parseInt(args[1]);
     if (isNaN(fromFrame) || fromFrame < 0) {
@@ -513,9 +554,13 @@ DebugRequest.prototype.backtraceCommandToJSONRequest_ = function(args) {
       throw new Error('Invalid arguments start frame cannot be larger ' +
                       'than end frame.');
     }
+    // Show frame range.
     request.arguments.fromFrame = fromFrame;
     request.arguments.toFrame = toFrame + 1;
+  } else if (args.length > 2) {
+    throw new Error('Invalid backtrace arguments.');
   }
+
   return request.toJSONProtocol();
 };
 
@@ -524,6 +569,27 @@ DebugRequest.prototype.backtraceCommandToJSONRequest_ = function(args) {
 DebugRequest.prototype.frameCommandToJSONRequest_ = function(args) {
   // Build a frame request from the text command.
   var request = this.createRequest('frame');
+  args = args.split(/\s*[ ]+\s*/g);
+  if (args.length > 0 && args[0].length > 0) {
+    request.arguments = {};
+    request.arguments.number = args[0];
+  }
+  return request.toJSONProtocol();
+};
+
+
+// Create a JSON request for the scopes command.
+DebugRequest.prototype.scopesCommandToJSONRequest_ = function(args) {
+  // Build a scopes request from the text command.
+  var request = this.createRequest('scopes');
+  return request.toJSONProtocol();
+};
+
+
+// Create a JSON request for the scope command.
+DebugRequest.prototype.scopeCommandToJSONRequest_ = function(args) {
+  // Build a scope request from the text command.
+  var request = this.createRequest('scope');
   args = args.split(/\s*[ ]+\s*/g);
   if (args.length > 0 && args[0].length > 0) {
     request.arguments = {};
@@ -653,17 +719,47 @@ DebugRequest.prototype.breakCommandToJSONRequest_ = function(args) {
   // Process arguments if any.
   if (args && args.length > 0) {
     var target = args;
+    var type = 'function';
+    var line;
+    var column;
     var condition;
+    var pos;
 
-    var pos = args.indexOf(' ');
+    // Check for breakpoint condition.
+    pos = args.indexOf(' ');
     if (pos > 0) {
       target = args.substring(0, pos);
       condition = args.substring(pos + 1, args.length);
     }
 
+    // Check for script breakpoint (name:line[:column]). If no ':' in break
+    // specification it is considered a function break point.
+    pos = target.indexOf(':');
+    if (pos > 0) {
+      type = 'script';
+      var tmp = target.substring(pos + 1, target.length);
+      target = target.substring(0, pos);
+      
+      // Check for both line and column.
+      pos = tmp.indexOf(':');
+      if (pos > 0) {
+        column = parseInt(tmp.substring(pos + 1, tmp.length)) - 1;
+        line = parseInt(tmp.substring(0, pos)) - 1;
+      } else {
+        line = parseInt(tmp) - 1;
+      }
+    } else if (target[0] == '#' && target[target.length - 1] == '#') {
+      type = 'handle';
+      target = target.substring(1, target.length - 1);
+    } else {
+      type = 'function';
+    }
+  
     request.arguments = {};
-    request.arguments.type = 'function';
+    request.arguments.type = type;
     request.arguments.target = target;
+    request.arguments.line = line;
+    request.arguments.column = column;
     request.arguments.condition = condition;
   } else {
     throw new Error('Invalid break arguments.');
@@ -721,11 +817,17 @@ DebugRequest.prototype.helpCommand_ = function(args) {
   }
 
   print('break location [condition]');
+  print('  break on named function: location is a function name');
+  print('  break on function: location is #<id>#');
+  print('  break on script position: location is name:line[:column]');
   print('clear <breakpoint #>');
-  print('backtrace [from frame #] [to frame #]]');
+  print('backtrace [n] | [-n] | [from to]');
   print('frame <frame #>');
+  print('scopes');
+  print('scope <scope #>');
   print('step [in | next | out| min [step count]]');
   print('print <expression>');
+  print('dir <expression>');
   print('source [from line [num lines]]');
   print('scripts');
   print('continue');
@@ -735,7 +837,11 @@ DebugRequest.prototype.helpCommand_ = function(args) {
 
 
 function formatHandleReference_(value) {
-  return '#' + value.handle() + '#';
+  if (value.handle() >= 0) {
+    return '#' + value.handle() + '#';
+  } else {
+    return '#Transient#';
+  }
 }
 
 
@@ -759,15 +865,46 @@ function formatObject_(value, include_properties) {
       result += value.propertyName(i);
       result += ': ';
       var property_value = value.propertyValue(i);
-      if (property_value && property_value.type()) {
-        result += property_value.type();
-      } else {
+      if (property_value instanceof ProtocolReference) {
         result += '<no type>';
+      } else {
+        if (property_value && property_value.type()) {
+          result += property_value.type();
+        } else {
+          result += '<no type>';
+        }
       }
       result += ' ';
       result += formatHandleReference_(property_value);
       result += '\n';
     }
+  }
+  return result;
+}
+
+
+function formatScope_(scope) {
+  var result = '';
+  var index = scope.index;
+  result += '#' + (index <= 9 ? '0' : '') + index;
+  result += ' ';
+  switch (scope.type) {
+    case Debug.ScopeType.Global:
+      result += 'Global, ';
+      result += '#' + scope.object.ref + '#';
+      break;
+    case Debug.ScopeType.Local:
+      result += 'Local';
+      break;
+    case Debug.ScopeType.With:
+      result += 'With, ';
+      result += '#' + scope.object.ref + '#';
+      break;
+    case Debug.ScopeType.Closure:
+      result += 'Closure';
+      break;
+    default:
+      result += 'UNKNOWN';
   }
   return result;
 }
@@ -822,12 +959,41 @@ function DebugResponseDetails(response) {
         Debug.State.currentFrame = body.index;
         break;
         
+      case 'scopes':
+        if (body.totalScopes == 0) {
+          result = '(no scopes)';
+        } else {
+          result = 'Scopes #' + body.fromScope + ' to #' +
+                   (body.toScope - 1) + ' of ' + body.totalScopes + '\n';
+          for (i = 0; i < body.scopes.length; i++) {
+            if (i != 0) {
+              result += '\n';
+            }
+            result += formatScope_(body.scopes[i]);
+          }
+        }
+        details.text = result;
+        break;
+
+      case 'scope':
+        result += formatScope_(body);
+        result += '\n';
+        var scope_object_value = response.lookup(body.object.ref);
+        result += formatObject_(scope_object_value, true);
+        details.text = result;
+        break;
+      
       case 'evaluate':
       case 'lookup':
         if (last_cmd == 'p' || last_cmd == 'print') {
           result = body.text;
         } else {
-          var value = response.bodyValue();
+          var value;
+          if (lookup_handle) {
+            value = response.bodyValue(lookup_handle);
+          } else {
+            value = response.bodyValue();
+          }
           if (value.isObject()) {
             result += formatObject_(value, true);
           } else {
@@ -909,7 +1075,18 @@ function DebugResponseDetails(response) {
           if (body[i].name) {
             result += body[i].name;
           } else {
-            result += '[unnamed] ';
+            if (body[i].compilationType == Debug.ScriptCompilationType.Eval) {
+              result += 'eval from ';
+              var script_value = response.lookup(body[i].evalFromScript.ref);
+              result += ' ' + script_value.field('name');
+              result += ':' + (body[i].evalFromLocation.line + 1);
+              result += ':' + body[i].evalFromLocation.column;
+            } else if (body[i].compilationType ==
+                       Debug.ScriptCompilationType.JSON) {
+              result += 'JSON ';
+            } else {  // body[i].compilation == Debug.ScriptCompilationType.Host
+              result += '[unnamed] ';
+            }
           }
           result += ' (lines: ';
           result += body[i].lineCount;
@@ -1033,7 +1210,7 @@ ProtocolPackage.prototype.body = function() {
 
 
 ProtocolPackage.prototype.bodyValue = function(index) {
-  if (index) {
+  if (index != null) {
     return new ProtocolValue(this.packet_.body[index], this);
   } else {
     return new ProtocolValue(this.packet_.body, this);
@@ -1068,6 +1245,15 @@ function ProtocolValue(value, packet) {
  */
 ProtocolValue.prototype.type = function() {
   return this.value_.type;
+}
+
+
+/**
+ * Get a metadata field from a protocol value. 
+ * @return {Object} the metadata field value
+ */
+ProtocolValue.prototype.field = function(name) {
+  return this.value_[name];
 }
 
 

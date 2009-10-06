@@ -31,9 +31,10 @@
 #include "log.h"
 #include "v8-counters.h"
 
-namespace v8 { namespace internal {
+namespace v8 {
+namespace internal {
 
-int Heap::MaxHeapObjectSize() {
+int Heap::MaxObjectSizeInPagedSpace() {
   return Page::kMaxHeapObjectSize;
 }
 
@@ -81,6 +82,8 @@ Object* Heap::AllocateRaw(int size_in_bytes,
     result = code_space_->AllocateRaw(size_in_bytes);
   } else if (LO_SPACE == space) {
     result = lo_space_->AllocateRaw(size_in_bytes);
+  } else if (CELL_SPACE == space) {
+    result = cell_space_->AllocateRaw(size_in_bytes);
   } else {
     ASSERT(MAP_SPACE == space);
     result = map_space_->AllocateRaw(size_in_bytes);
@@ -106,12 +109,23 @@ Object* Heap::NumberFromUint32(uint32_t value) {
 }
 
 
-Object* Heap::AllocateRawMap(int size_in_bytes) {
+Object* Heap::AllocateRawMap() {
 #ifdef DEBUG
   Counters::objs_since_last_full.Increment();
   Counters::objs_since_last_young.Increment();
 #endif
-  Object* result = map_space_->AllocateRaw(size_in_bytes);
+  Object* result = map_space_->AllocateRaw(Map::kSize);
+  if (result->IsFailure()) old_gen_exhausted_ = true;
+  return result;
+}
+
+
+Object* Heap::AllocateRawCell() {
+#ifdef DEBUG
+  Counters::objs_since_last_full.Increment();
+  Counters::objs_since_last_young.Increment();
+#endif
+  Object* result = cell_space_->AllocateRaw(JSGlobalPropertyCell::kSize);
   if (result->IsFailure()) old_gen_exhausted_ = true;
   return result;
 }
@@ -191,28 +205,54 @@ void Heap::CopyBlock(Object** dst, Object** src, int byte_size) {
 }
 
 
-Object* Heap::GetKeyedLookupCache() {
-  if (keyed_lookup_cache()->IsUndefined()) {
-    Object* obj = LookupCache::Allocate(4);
-    if (obj->IsFailure()) return obj;
-    keyed_lookup_cache_ = obj;
+void Heap::ScavengeObject(HeapObject** p, HeapObject* object) {
+  ASSERT(InFromSpace(object));
+
+  // We use the first word (where the map pointer usually is) of a heap
+  // object to record the forwarding pointer.  A forwarding pointer can
+  // point to an old space, the code space, or the to space of the new
+  // generation.
+  MapWord first_word = object->map_word();
+
+  // If the first word is a forwarding address, the object has already been
+  // copied.
+  if (first_word.IsForwardingAddress()) {
+    *p = first_word.ToForwardingAddress();
+    return;
   }
-  return keyed_lookup_cache();
+
+  // Call the slow part of scavenge object.
+  return ScavengeObjectSlow(p, object);
 }
 
 
-void Heap::SetKeyedLookupCache(LookupCache* cache) {
-  keyed_lookup_cache_ = cache;
-}
-
-
-void Heap::ClearKeyedLookupCache() {
-  keyed_lookup_cache_ = undefined_value();
+int Heap::AdjustAmountOfExternalAllocatedMemory(int change_in_bytes) {
+  ASSERT(HasBeenSetup());
+  int amount = amount_of_external_allocated_memory_ + change_in_bytes;
+  if (change_in_bytes >= 0) {
+    // Avoid overflow.
+    if (amount > amount_of_external_allocated_memory_) {
+      amount_of_external_allocated_memory_ = amount;
+    }
+    int amount_since_last_global_gc =
+        amount_of_external_allocated_memory_ -
+        amount_of_external_allocated_memory_at_last_global_gc_;
+    if (amount_since_last_global_gc > external_allocation_limit_) {
+      CollectAllGarbage(false);
+    }
+  } else {
+    // Avoid underflow.
+    if (amount >= 0) {
+      amount_of_external_allocated_memory_ = amount;
+    }
+  }
+  ASSERT(amount_of_external_allocated_memory_ >= 0);
+  return amount_of_external_allocated_memory_;
 }
 
 
 void Heap::SetLastScriptId(Object* last_script_id) {
-  last_script_id_ = last_script_id;
+  roots_[kLastScriptIdRootIndex] = last_script_id;
 }
 
 
@@ -245,17 +285,17 @@ void Heap::SetLastScriptId(Object* last_script_id) {
     }                                                                     \
     if (!__object__->IsRetryAfterGC()) RETURN_EMPTY;                      \
     Counters::gc_last_resort_from_handles.Increment();                    \
-    Heap::CollectAllGarbage();                                            \
+    Heap::CollectAllGarbage(false);                                       \
     {                                                                     \
       AlwaysAllocateScope __scope__;                                      \
       __object__ = FUNCTION_CALL;                                         \
     }                                                                     \
     if (!__object__->IsFailure()) RETURN_VALUE;                           \
-    if (__object__->IsOutOfMemoryFailure()) {                             \
+    if (__object__->IsOutOfMemoryFailure() ||                             \
+        __object__->IsRetryAfterGC()) {                                   \
       /* TODO(1181417): Fix this. */                                      \
       v8::internal::V8::FatalProcessOutOfMemory("CALL_AND_RETRY_2");      \
     }                                                                     \
-    ASSERT(!__object__->IsRetryAfterGC());                                \
     RETURN_EMPTY;                                                         \
   } while (false)
 

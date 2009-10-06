@@ -1,4 +1,4 @@
-// Copyright 2006-2008 the V8 project authors. All rights reserved.
+// Copyright 2006-2009 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -35,14 +35,14 @@
 #include "runtime.h"
 #include "stub-cache.h"
 
-namespace v8 { namespace internal {
+namespace v8 {
+namespace internal {
 
 #ifdef DEBUG
 static char TransitionMarkFromState(IC::State state) {
   switch (state) {
     case UNINITIALIZED: return '0';
-    case UNINITIALIZED_IN_LOOP: return 'L';
-    case PREMONOMORPHIC: return '0';
+    case PREMONOMORPHIC: return 'P';
     case MONOMORPHIC: return '1';
     case MONOMORPHIC_PROTOTYPE_FAILURE: return '^';
     case MEGAMORPHIC: return 'N';
@@ -60,12 +60,14 @@ static char TransitionMarkFromState(IC::State state) {
 void IC::TraceIC(const char* type,
                  Handle<String> name,
                  State old_state,
-                 Code* new_target) {
+                 Code* new_target,
+                 const char* extra_info) {
   if (FLAG_trace_ic) {
     State new_state = StateFrom(new_target, Heap::undefined_value());
-    PrintF("[%s (%c->%c) ", type,
+    PrintF("[%s (%c->%c)%s", type,
            TransitionMarkFromState(old_state),
-           TransitionMarkFromState(new_state));
+           TransitionMarkFromState(new_state),
+           extra_info);
     name->Print();
     PrintF("]\n");
   }
@@ -100,6 +102,7 @@ IC::IC(FrameDepth depth) {
 }
 
 
+#ifdef ENABLE_DEBUGGER_SUPPORT
 Address IC::OriginalCodeAddress() {
   HandleScope scope;
   // Compute the JavaScript frame for the frame pointer of this IC
@@ -119,14 +122,14 @@ Address IC::OriginalCodeAddress() {
   // Get the address of the call site in the active code. This is the
   // place where the call to DebugBreakXXX is and where the IC
   // normally would be.
-  Address addr = pc() - Assembler::kTargetAddrToReturnAddrDist;
+  Address addr = pc() - Assembler::kPatchReturnSequenceLength;
   // Return the address in the original code. This is the place where
   // the call which has been overwritten by the DebugBreakXXX resides
   // and the place where the inline cache system should look.
   int delta = original_code->instruction_start() - code->instruction_start();
   return addr + delta;
 }
-
+#endif
 
 IC::State IC::StateFrom(Code* target, Object* receiver) {
   IC::State state = target->ic_state();
@@ -225,8 +228,10 @@ void IC::Clear(Address address) {
 
 void CallIC::Clear(Address address, Code* target) {
   State state = target->ic_state();
-  if (state == UNINITIALIZED || state == UNINITIALIZED_IN_LOOP) return;
-  Code* code = StubCache::FindCallInitialize(target->arguments_count());
+  InLoopFlag in_loop = target->ic_in_loop();
+  if (state == UNINITIALIZED) return;
+  Code* code =
+      StubCache::FindCallInitialize(target->arguments_count(), in_loop);
   SetTargetAtAddress(address, code);
 }
 
@@ -236,13 +241,14 @@ void KeyedLoadIC::Clear(Address address, Code* target) {
   // Make sure to also clear the map used in inline fast cases.  If we
   // do not clear these maps, cached code can keep objects alive
   // through the embedded maps.
-  PatchInlinedMapCheck(address, Heap::null_value());
+  ClearInlinedVersion(address);
   SetTargetAtAddress(address, initialize_stub());
 }
 
 
 void LoadIC::Clear(Address address, Code* target) {
   if (target->ic_state() == UNINITIALIZED) return;
+  ClearInlinedVersion(address);
   SetTargetAtAddress(address, initialize_stub());
 }
 
@@ -256,6 +262,50 @@ void StoreIC::Clear(Address address, Code* target) {
 void KeyedStoreIC::Clear(Address address, Code* target) {
   if (target->ic_state() == UNINITIALIZED) return;
   SetTargetAtAddress(address, initialize_stub());
+}
+
+
+static bool HasInterceptorGetter(JSObject* object) {
+  return !object->GetNamedInterceptor()->getter()->IsUndefined();
+}
+
+
+static void LookupForRead(Object* object,
+                          String* name,
+                          LookupResult* lookup) {
+  AssertNoAllocation no_gc;  // pointers must stay valid
+
+  // Skip all the objects with named interceptors, but
+  // without actual getter.
+  while (true) {
+    object->Lookup(name, lookup);
+    // Besides normal conditions (property not found or it's not
+    // an interceptor), bail out of lookup is not cacheable: we won't
+    // be able to IC it anyway and regular lookup should work fine.
+    if (lookup->IsNotFound() || lookup->type() != INTERCEPTOR ||
+        !lookup->IsCacheable()) {
+      return;
+    }
+
+    JSObject* holder = lookup->holder();
+    if (HasInterceptorGetter(holder)) {
+      return;
+    }
+
+    holder->LocalLookupRealNamedProperty(name, lookup);
+    if (lookup->IsValid()) {
+      ASSERT(lookup->type() != INTERCEPTOR);
+      return;
+    }
+
+    Object* proto = holder->GetPrototype();
+    if (proto->IsNull()) {
+      lookup->NotFound();
+      return;
+    }
+
+    object = proto;
+  }
 }
 
 
@@ -288,13 +338,11 @@ Object* CallIC::LoadFunction(State state,
     return TypeError("non_object_property_call", object, name);
   }
 
-  Object* result = Heap::the_hole_value();
-
   // Check if the name is trivially convertible to an index and get
   // the element if so.
   uint32_t index;
   if (name->AsArrayIndex(&index)) {
-    result = object->GetElement(index);
+    Object* result = object->GetElement(index);
     if (result->IsJSFunction()) return result;
 
     // Try to find a suitable function delegate for the object at hand.
@@ -306,7 +354,7 @@ Object* CallIC::LoadFunction(State state,
 
   // Lookup the property in the object.
   LookupResult lookup;
-  object->Lookup(*name, &lookup);
+  LookupForRead(*object, *name, &lookup);
 
   // If the object does not have the requested property but has
   // __noSuchMethod__ method...
@@ -340,11 +388,11 @@ Object* CallIC::LoadFunction(State state,
     UpdateCaches(&lookup, state, object, name);
   }
 
+  // Get the property.
+  PropertyAttributes attr;
+  Object* result = object->GetProperty(*object, &lookup, *name, &attr);
+  if (result->IsFailure()) return result;
   if (lookup.type() == INTERCEPTOR) {
-    // Get the property.
-    PropertyAttributes attr;
-    result = object->GetProperty(*name, &attr);
-    if (result->IsFailure()) return result;
     // If the object does not have the requested property, check which
     // exception we need to throw.
     if (attr == ABSENT) {
@@ -353,11 +401,6 @@ Object* CallIC::LoadFunction(State state,
       }
       return TypeError("undefined_method", object, name);
     }
-  } else {
-    // Lookup is valid and no interceptors are involved. Get the
-    // property.
-    result = object->GetProperty(*name);
-    if (result->IsFailure()) return result;
   }
 
   ASSERT(result != Heap::the_hole_value());
@@ -374,15 +417,17 @@ Object* CallIC::LoadFunction(State state,
       if (opt->IsJSFunction()) return opt;
     }
 
+#ifdef ENABLE_DEBUGGER_SUPPORT
     // Handle stepping into a function if step into is active.
     if (Debug::StepInActive()) {
       // Protect the result in a handle as the debugger can allocate and might
       // cause GC.
       HandleScope scope;
       Handle<JSFunction> function(JSFunction::cast(result));
-      Debug::HandleStepIn(function, fp(), false);
+      Debug::HandleStepIn(function, object, fp(), false);
       return *function;
     }
+#endif
 
     return result;
   }
@@ -404,21 +449,22 @@ void CallIC::UpdateCaches(LookupResult* lookup,
 
   // Compute the number of arguments.
   int argc = target()->arguments_count();
+  InLoopFlag in_loop = target()->ic_in_loop();
   Object* code = NULL;
 
   if (state == UNINITIALIZED) {
     // This is the first time we execute this inline cache.
     // Set the target to the pre monomorphic stub to delay
     // setting the monomorphic state.
-    code = StubCache::ComputeCallPreMonomorphic(argc);
+    code = StubCache::ComputeCallPreMonomorphic(argc, in_loop);
   } else if (state == MONOMORPHIC) {
-    code = StubCache::ComputeCallMegamorphic(argc);
+    code = StubCache::ComputeCallMegamorphic(argc, in_loop);
   } else {
     // Compute monomorphic stub.
     switch (lookup->type()) {
       case FIELD: {
         int index = lookup->GetFieldIndex();
-        code = StubCache::ComputeCallField(argc, *name, *object,
+        code = StubCache::ComputeCallField(argc, in_loop, *name, *object,
                                            lookup->holder(), index);
         break;
       }
@@ -427,22 +473,39 @@ void CallIC::UpdateCaches(LookupResult* lookup,
         // call; used for rewriting to monomorphic state and making sure
         // that the code stub is in the stub cache.
         JSFunction* function = lookup->GetConstantFunction();
-        code = StubCache::ComputeCallConstant(argc, *name, *object,
+        code = StubCache::ComputeCallConstant(argc, in_loop, *name, *object,
                                               lookup->holder(), function);
         break;
       }
       case NORMAL: {
-        // There is only one shared stub for calling normalized
-        // properties. It does not traverse the prototype chain, so the
-        // property must be found in the receiver for the stub to be
-        // applicable.
         if (!object->IsJSObject()) return;
         Handle<JSObject> receiver = Handle<JSObject>::cast(object);
-        if (lookup->holder() != *receiver) return;
-        code = StubCache::ComputeCallNormal(argc, *name, *receiver);
+
+        if (lookup->holder()->IsGlobalObject()) {
+          GlobalObject* global = GlobalObject::cast(lookup->holder());
+          JSGlobalPropertyCell* cell =
+              JSGlobalPropertyCell::cast(global->GetPropertyCell(lookup));
+          if (!cell->value()->IsJSFunction()) return;
+          JSFunction* function = JSFunction::cast(cell->value());
+          code = StubCache::ComputeCallGlobal(argc,
+                                              in_loop,
+                                              *name,
+                                              *receiver,
+                                              global,
+                                              cell,
+                                              function);
+        } else {
+          // There is only one shared stub for calling normalized
+          // properties. It does not traverse the prototype chain, so the
+          // property must be found in the receiver for the stub to be
+          // applicable.
+          if (lookup->holder() != *receiver) return;
+          code = StubCache::ComputeCallNormal(argc, in_loop, *name, *receiver);
+        }
         break;
       }
       case INTERCEPTOR: {
+        ASSERT(HasInterceptorGetter(lookup->holder()));
         code = StubCache::ComputeCallInterceptor(argc, *name, *object,
                                                  lookup->holder());
         break;
@@ -454,17 +517,18 @@ void CallIC::UpdateCaches(LookupResult* lookup,
 
   // If we're unable to compute the stub (not enough memory left), we
   // simply avoid updating the caches.
-  if (code->IsFailure()) return;
+  if (code == NULL || code->IsFailure()) return;
 
   // Patch the call site depending on the state of the cache.
-  if (state == UNINITIALIZED || state == UNINITIALIZED_IN_LOOP ||
-      state == PREMONOMORPHIC || state == MONOMORPHIC ||
+  if (state == UNINITIALIZED ||
+      state == PREMONOMORPHIC ||
+      state == MONOMORPHIC ||
       state == MONOMORPHIC_PROTOTYPE_FAILURE) {
     set_target(Code::cast(code));
   }
 
 #ifdef DEBUG
-  TraceIC("CallIC", name, state, target());
+  TraceIC("CallIC", name, state, target(), in_loop ? " (in-loop)" : "");
 #endif
 }
 
@@ -528,7 +592,7 @@ Object* LoadIC::Load(State state, Handle<Object> object, Handle<String> name) {
 
   // Named lookup in the object.
   LookupResult lookup;
-  object->Lookup(*name, &lookup);
+  LookupForRead(*object, *name, &lookup);
 
   // If lookup is invalid, check if we need to throw an exception.
   if (!lookup.IsValid()) {
@@ -536,6 +600,31 @@ Object* LoadIC::Load(State state, Handle<Object> object, Handle<String> name) {
       return ReferenceError("not_defined", name);
     }
     LOG(SuspectReadEvent(*name, *object));
+  }
+
+  bool can_be_inlined =
+      FLAG_use_ic &&
+      state == PREMONOMORPHIC &&
+      lookup.IsValid() &&
+      lookup.IsLoaded() &&
+      lookup.IsCacheable() &&
+      lookup.holder() == *object &&
+      lookup.type() == FIELD &&
+      !object->IsAccessCheckNeeded();
+
+  if (can_be_inlined) {
+    Map* map = lookup.holder()->map();
+    // Property's index in the properties array.  If negative we have
+    // an inobject property.
+    int index = lookup.GetFieldIndex() - map->inobject_properties();
+    if (index < 0) {
+      // Index is an offset from the end of the object.
+      int offset = map->instance_size() + (index * kPointerSize);
+      if (PatchInlinedLoad(address(), map, offset)) {
+        set_target(megamorphic_stub());
+        return lookup.holder()->FastPropertyAt(lookup.GetFieldIndex());
+      }
+    }
   }
 
   // Update inline cache and stub cache.
@@ -597,12 +686,23 @@ void LoadIC::UpdateCaches(LookupResult* lookup,
         break;
       }
       case NORMAL: {
-        // There is only one shared stub for loading normalized
-        // properties. It does not traverse the prototype chain, so the
-        // property must be found in the receiver for the stub to be
-        // applicable.
-        if (lookup->holder() != *receiver) return;
-        code = StubCache::ComputeLoadNormal(*name, *receiver);
+        if (lookup->holder()->IsGlobalObject()) {
+          GlobalObject* global = GlobalObject::cast(lookup->holder());
+          JSGlobalPropertyCell* cell =
+              JSGlobalPropertyCell::cast(global->GetPropertyCell(lookup));
+          code = StubCache::ComputeLoadGlobal(*name,
+                                              *receiver,
+                                              global,
+                                              cell,
+                                              lookup->IsDontDelete());
+        } else {
+          // There is only one shared stub for loading normalized
+          // properties. It does not traverse the prototype chain, so the
+          // property must be found in the receiver for the stub to be
+          // applicable.
+          if (lookup->holder() != *receiver) return;
+          code = StubCache::ComputeLoadNormal(*name, *receiver);
+        }
         break;
       }
       case CALLBACKS: {
@@ -615,6 +715,7 @@ void LoadIC::UpdateCaches(LookupResult* lookup,
         break;
       }
       case INTERCEPTOR: {
+        ASSERT(HasInterceptorGetter(lookup->holder()));
         code = StubCache::ComputeLoadInterceptor(*name, *receiver,
                                                  lookup->holder());
         break;
@@ -626,7 +727,7 @@ void LoadIC::UpdateCaches(LookupResult* lookup,
 
   // If we're unable to compute the stub (not enough memory left), we
   // simply avoid updating the caches.
-  if (code->IsFailure()) return;
+  if (code == NULL || code->IsFailure()) return;
 
   // Patch the call site depending on the state of the cache.
   if (state == UNINITIALIZED || state == PREMONOMORPHIC ||
@@ -664,7 +765,7 @@ Object* KeyedLoadIC::Load(State state,
         set_target(Code::cast(code));
 #ifdef DEBUG
         TraceIC("KeyedLoadIC", name, state, target());
-#endif
+#endif  // DEBUG
         return Smi::FromInt(string->length());
       }
 
@@ -676,7 +777,7 @@ Object* KeyedLoadIC::Load(State state,
         set_target(Code::cast(code));
 #ifdef DEBUG
         TraceIC("KeyedLoadIC", name, state, target());
-#endif
+#endif  // DEBUG
         return JSArray::cast(*object)->length();
       }
 
@@ -689,7 +790,7 @@ Object* KeyedLoadIC::Load(State state,
         set_target(Code::cast(code));
 #ifdef DEBUG
         TraceIC("KeyedLoadIC", name, state, target());
-#endif
+#endif  // DEBUG
         return Accessors::FunctionGetPrototype(*object, 0);
       }
     }
@@ -706,7 +807,7 @@ Object* KeyedLoadIC::Load(State state,
 
     // Named lookup.
     LookupResult lookup;
-    object->Lookup(*name, &lookup);
+    LookupForRead(*object, *name, &lookup);
 
     // If lookup is invalid, check if we need to throw an exception.
     if (!lookup.IsValid()) {
@@ -715,7 +816,6 @@ Object* KeyedLoadIC::Load(State state,
       }
     }
 
-    // Update the inline cache.
     if (FLAG_use_ic && lookup.IsLoaded()) {
       UpdateCaches(&lookup, state, object, name);
     }
@@ -749,7 +849,7 @@ Object* KeyedLoadIC::Load(State state,
         !object->IsJSValue() &&
         !JSObject::cast(*object)->HasIndexedInterceptor()) {
       Map* map = JSObject::cast(*object)->map();
-      PatchInlinedMapCheck(address(), map);
+      PatchInlinedLoad(address(), map);
     }
   }
 
@@ -800,6 +900,7 @@ void KeyedLoadIC::UpdateCaches(LookupResult* lookup, State state,
         break;
       }
       case INTERCEPTOR: {
+        ASSERT(HasInterceptorGetter(lookup->holder()));
         code = StubCache::ComputeKeyedLoadInterceptor(*name, *receiver,
                                                       lookup->holder());
         break;
@@ -815,7 +916,7 @@ void KeyedLoadIC::UpdateCaches(LookupResult* lookup, State state,
 
   // If we're unable to compute the stub (not enough memory left), we
   // simply avoid updating the caches.
-  if (code->IsFailure()) return;
+  if (code == NULL || code->IsFailure()) return;
 
   // Patch the call site depending on the state of the cache.  Make
   // sure to always rewrite from monomorphic to megamorphic.
@@ -829,6 +930,39 @@ void KeyedLoadIC::UpdateCaches(LookupResult* lookup, State state,
 #ifdef DEBUG
   TraceIC("KeyedLoadIC", name, state, target());
 #endif
+}
+
+
+static bool StoreICableLookup(LookupResult* lookup) {
+  // Bail out if we didn't find a result.
+  if (!lookup->IsValid() || !lookup->IsCacheable()) return false;
+
+  // If the property is read-only, we leave the IC in its current
+  // state.
+  if (lookup->IsReadOnly()) return false;
+
+  if (!lookup->IsLoaded()) return false;
+
+  return true;
+}
+
+
+static bool LookupForWrite(JSObject* object,
+                           String* name,
+                           LookupResult* lookup) {
+  object->LocalLookup(name, lookup);
+  if (!StoreICableLookup(lookup)) {
+    return false;
+  }
+
+  if (lookup->type() == INTERCEPTOR) {
+    if (object->GetNamedInterceptor()->setter()->IsUndefined()) {
+      object->LocalLookupRealNamedProperty(name, lookup);
+      return StoreICableLookup(lookup);
+    }
+  }
+
+  return true;
 }
 
 
@@ -856,12 +990,11 @@ Object* StoreIC::Store(State state,
   }
 
   // Lookup the property locally in the receiver.
-  LookupResult lookup;
-  receiver->LocalLookup(*name, &lookup);
-
-  // Update inline cache and stub cache.
-  if (FLAG_use_ic && lookup.IsLoaded()) {
-    UpdateCaches(&lookup, state, receiver, name, value);
+  if (FLAG_use_ic && !receiver->IsJSGlobalProxy()) {
+    LookupResult lookup;
+    if (LookupForWrite(*receiver, *name, &lookup)) {
+      UpdateCaches(&lookup, state, receiver, name, value);
+    }
   }
 
   // Set the property.
@@ -876,14 +1009,9 @@ void StoreIC::UpdateCaches(LookupResult* lookup,
                            Handle<Object> value) {
   ASSERT(lookup->IsLoaded());
   // Skip JSGlobalProxy.
-  if (receiver->IsJSGlobalProxy()) return;
+  ASSERT(!receiver->IsJSGlobalProxy());
 
-  // Bail out if we didn't find a result.
-  if (!lookup->IsValid() || !lookup->IsCacheable()) return;
-
-  // If the property is read-only, we leave the IC in its current
-  // state.
-  if (lookup->IsReadOnly()) return;
+  ASSERT(StoreICableLookup(lookup));
 
   // If the property has a non-field type allowing map transitions
   // where there is extra room in the object, we leave the IC in its
@@ -909,6 +1037,19 @@ void StoreIC::UpdateCaches(LookupResult* lookup,
       code = StubCache::ComputeStoreField(*name, *receiver, index, *transition);
       break;
     }
+    case NORMAL: {
+      if (!receiver->IsGlobalObject()) {
+        return;
+      }
+      // The stub generated for the global object picks the value directly
+      // from the property cell. So the property must be directly on the
+      // global object.
+      Handle<GlobalObject> global = Handle<GlobalObject>::cast(receiver);
+      JSGlobalPropertyCell* cell =
+          JSGlobalPropertyCell::cast(global->GetPropertyCell(lookup));
+      code = StubCache::ComputeStoreGlobal(*name, *global, cell);
+      break;
+    }
     case CALLBACKS: {
       if (!lookup->GetCallbackObject()->IsAccessorInfo()) return;
       AccessorInfo* callback = AccessorInfo::cast(lookup->GetCallbackObject());
@@ -917,6 +1058,7 @@ void StoreIC::UpdateCaches(LookupResult* lookup,
       break;
     }
     case INTERCEPTOR: {
+      ASSERT(!receiver->GetNamedInterceptor()->setter()->IsUndefined());
       code = StubCache::ComputeStoreInterceptor(*name, *receiver);
       break;
     }
@@ -926,7 +1068,7 @@ void StoreIC::UpdateCaches(LookupResult* lookup,
 
   // If we're unable to compute the stub (not enough memory left), we
   // simply avoid updating the caches.
-  if (code->IsFailure()) return;
+  if (code == NULL || code->IsFailure()) return;
 
   // Patch the call site depending on the state of the cache.
   if (state == UNINITIALIZED || state == MONOMORPHIC_PROTOTYPE_FAILURE) {
@@ -1048,7 +1190,7 @@ void KeyedStoreIC::UpdateCaches(LookupResult* lookup,
 
   // If we're unable to compute the stub (not enough memory left), we
   // simply avoid updating the caches.
-  if (code->IsFailure()) return;
+  if (code == NULL || code->IsFailure()) return;
 
   // Patch the call site depending on the state of the cache.  Make
   // sure to always rewrite from monomorphic to megamorphic.
@@ -1077,24 +1219,32 @@ Object* CallIC_Miss(Arguments args) {
   IC::State state = IC::StateFrom(ic.target(), args[0]);
   Object* result =
       ic.LoadFunction(state, args.at<Object>(0), args.at<String>(1));
-  if (state != UNINITIALIZED_IN_LOOP || !result->IsJSFunction())
-    return result;
 
-  // Compile the function with the knowledge that it's called from
-  // within a loop. This enables further optimization of the function.
+  // The first time the inline cache is updated may be the first time the
+  // function it references gets called.  If the function was lazily compiled
+  // then the first call will trigger a compilation.  We check for this case
+  // and we do the compilation immediately, instead of waiting for the stub
+  // currently attached to the JSFunction object to trigger compilation.  We
+  // do this in the case where we know that the inline cache is inside a loop,
+  // because then we know that we want to optimize the function.
+  if (!result->IsJSFunction() || JSFunction::cast(result)->is_compiled()) {
+    return result;
+  }
+
+  // Compile now with optimization.
   HandleScope scope;
   Handle<JSFunction> function = Handle<JSFunction>(JSFunction::cast(result));
-  if (!function->is_compiled()) CompileLazyInLoop(function, CLEAR_EXCEPTION);
+  InLoopFlag in_loop = ic.target()->ic_in_loop();
+  if (in_loop == IN_LOOP) {
+    CompileLazyInLoop(function, CLEAR_EXCEPTION);
+  } else {
+    CompileLazy(function, CLEAR_EXCEPTION);
+  }
   return *function;
 }
 
 
 void CallIC::GenerateInitialize(MacroAssembler* masm, int argc) {
-  Generate(masm, argc, ExternalReference(IC_Utility(kCallIC_Miss)));
-}
-
-
-void CallIC::GeneratePreMonomorphic(MacroAssembler* masm, int argc) {
   Generate(masm, argc, ExternalReference(IC_Utility(kCallIC_Miss)));
 }
 

@@ -28,7 +28,6 @@
 
 // This file relies on the fact that the following declarations have been made
 // in v8natives.js:
-// const $isNaN = GlobalIsNaN;
 // const $isFinite = GlobalIsFinite;
 
 // -------------------------------------------------------------------
@@ -41,9 +40,14 @@
 // changes to these properties.
 const $Date = global.Date;
 
+// Helper function to throw error.
+function ThrowDateTypeError() {
+  throw new $TypeError('this is not a Date object.');
+}
+
 // ECMA 262 - 15.9.1.2
 function Day(time) {
-  return FLOOR(time/msPerDay);
+  return FLOOR(time / msPerDay);
 }
 
 
@@ -115,7 +119,7 @@ function EquivalentYear(year) {
   // - leap year.
   // - week day of first day.
   var time = TimeFromYear(year);
-  var recent_year = (InLeapYear(time) == 0 ? 1967 : 1956) + 
+  var recent_year = (InLeapYear(time) == 0 ? 1967 : 1956) +
       (WeekDay(time) * 12) % 28;
   // Find the year in the range 2008..2037 that is equivalent mod 28.
   // Add 3*28 to give a positive argument to the modulus operator.
@@ -129,23 +133,85 @@ function EquivalentTime(t) {
   // (measured in whole seconds based on the 1970 epoch).
   // We solve this by mapping the time to a year with same leap-year-ness
   // and same starting day for the year.  The ECMAscript specification says
-  // we must do this, but for compatability with other browsers, we use
+  // we must do this, but for compatibility with other browsers, we use
   // the actual year if it is in the range 1970..2037
   if (t >= 0 && t <= 2.1e12) return t;
   var day = MakeDay(EquivalentYear(YearFromTime(t)), MonthFromTime(t), DateFromTime(t));
   return TimeClip(MakeDate(day, TimeWithinDay(t)));
 }
 
-var daylight_cache_time = $NaN;
-var daylight_cache_offset;
 
+// Because computing the DST offset is a pretty expensive operation
+// we keep a cache of last computed offset along with a time interval
+// where we know the cache is valid.
+var DST_offset_cache = {
+  // Cached DST offset.
+  offset: 0,
+  // Time interval where the cached offset is valid.
+  start: 0, end: -1,
+  // Size of next interval expansion.
+  increment: 0
+};
+
+
+// NOTE: The implementation relies on the fact that no time zones have
+// more than one daylight savings offset change per month.
+// If this function is called with NaN it returns NaN.
 function DaylightSavingsOffset(t) {
-  if (t == daylight_cache_time) {
-    return daylight_cache_offset;
+  // Load the cache object from the builtins object.
+  var cache = DST_offset_cache;
+
+  // Cache the start and the end in local variables for fast access.
+  var start = cache.start;
+  var end = cache.end;
+
+  if (start <= t) {
+    // If the time fits in the cached interval, return the cached offset.
+    if (t <= end) return cache.offset;
+
+    // Compute a possible new interval end.
+    var new_end = end + cache.increment;
+
+    if (t <= new_end) {
+      var end_offset = %DateDaylightSavingsOffset(EquivalentTime(new_end));
+      if (cache.offset == end_offset) {
+        // If the offset at the end of the new interval still matches
+        // the offset in the cache, we grow the cached time interval
+        // and return the offset.
+        cache.end = new_end;
+        cache.increment = msPerMonth;
+        return end_offset;
+      } else {
+        var offset = %DateDaylightSavingsOffset(EquivalentTime(t));
+        if (offset == end_offset) {
+          // The offset at the given time is equal to the offset at the
+          // new end of the interval, so that means that we've just skipped
+          // the point in time where the DST offset change occurred. Updated
+          // the interval to reflect this and reset the increment.
+          cache.start = t;
+          cache.end = new_end;
+          cache.increment = msPerMonth;
+        } else {
+          // The interval contains a DST offset change and the given time is
+          // before it. Adjust the increment to avoid a linear search for
+          // the offset change point and change the end of the interval.
+          cache.increment /= 3;
+          cache.end = t;
+        }
+        // Update the offset in the cache and return it.
+        cache.offset = offset;
+        return offset;
+      }
+    }
   }
+
+  // Compute the DST offset for the time and shrink the cache interval
+  // to only contain the time. This allows fast repeated DST offset
+  // computations for the same time.
   var offset = %DateDaylightSavingsOffset(EquivalentTime(t));
-  daylight_cache_time = t;
-  daylight_cache_offset = offset;
+  cache.offset = offset;
+  cache.start = cache.end = t;
+  cache.increment = msPerMonth;
   return offset;
 }
 
@@ -154,7 +220,8 @@ var timezone_cache_time = $NaN;
 var timezone_cache_timezone;
 
 function LocalTimezone(t) {
-  if(t == timezone_cache_time) {
+  if (NUMBER_IS_NAN(t)) return "";
+  if (t == timezone_cache_time) {
     return timezone_cache_timezone;
   }
   var timezone = %DateLocalTimezone(EquivalentTime(t));
@@ -171,7 +238,7 @@ function WeekDay(time) {
 var local_time_offset = %DateLocalTimeOffset();
 
 function LocalTime(time) {
-  if ($isNaN(time)) return time;
+  if (NUMBER_IS_NAN(time)) return time;
   return time + local_time_offset + DaylightSavingsOffset(time);
 }
 
@@ -181,7 +248,7 @@ function LocalTimeNoCheck(time) {
 
 
 function UTC(time) {
-  if ($isNaN(time)) return time;
+  if (NUMBER_IS_NAN(time)) return time;
   var tmp = time - local_time_offset;
   return tmp - DaylightSavingsOffset(tmp);
 }
@@ -362,30 +429,63 @@ function TimeClip(time) {
 }
 
 
+// The Date cache is used to limit the cost of parsing the same Date
+// strings over and over again.
+var Date_cache = {
+  // Cached time value.
+  time: $NaN,
+  // Cached year when interpreting the time as a local time. Only
+  // valid when the time matches cached time.
+  year: $NaN,
+  // String input for which the cached time is valid.
+  string: null
+};
+
+
 %SetCode($Date, function(year, month, date, hours, minutes, seconds, ms) {
-  if (%IsConstructCall()) {
-    // ECMA 262 - 15.9.3
-    var argc = %_ArgumentsLength();
-    if (argc == 0) {
-      %_SetValueOf(this, %DateCurrentTime());
-      return;
-    }
-    if (argc == 1) {
-      // According to ECMA 262, no hint should be given for this
-      // conversion.  However, ToPrimitive defaults to String Hint
-      // for Date objects which will lose precision when the Date
-      // constructor is called with another Date object as its
-      // argument.  We therefore use Number Hint for the conversion
-      // (which is the default for everything else than Date
-      // objects).  This makes us behave like KJS and SpiderMonkey.
-      var time = ToPrimitive(year, NUMBER_HINT);
-      if (IS_STRING(time)) {
-        %_SetValueOf(this, DateParse(time));
+  if (!%_IsConstructCall()) {
+    // ECMA 262 - 15.9.2
+    return (new $Date()).toString();
+  }
+
+  // ECMA 262 - 15.9.3
+  var argc = %_ArgumentsLength();
+  var value;
+  if (argc == 0) {
+    value = %DateCurrentTime();
+
+  } else if (argc == 1) {
+    if (IS_NUMBER(year)) {
+      value = TimeClip(year);
+
+    } else if (IS_STRING(year)) {
+      // Probe the Date cache. If we already have a time value for the
+      // given time, we re-use that instead of parsing the string again.
+      var cache = Date_cache;
+      if (cache.string === year) {
+        value = cache.time;
       } else {
-        %_SetValueOf(this, TimeClip(ToNumber(time)));
+        value = DateParse(year);
+        if (!NUMBER_IS_NAN(value)) {
+          cache.time = value;
+          cache.year = YearFromTime(LocalTimeNoCheck(value));
+          cache.string = year;
+        }
       }
-      return;
+
+    } else {
+      // According to ECMA 262, no hint should be given for this
+      // conversion. However, ToPrimitive defaults to STRING_HINT for
+      // Date objects which will lose precision when the Date
+      // constructor is called with another Date object as its
+      // argument. We therefore use NUMBER_HINT for the conversion,
+      // which is the default for everything else than Date objects.
+      // This makes us behave like KJS and SpiderMonkey.
+      var time = ToPrimitive(year, NUMBER_HINT);
+      value = IS_STRING(time) ? DateParse(time) : TimeClip(ToNumber(time));
     }
+
+  } else {
     year = ToNumber(year);
     month = ToNumber(month);
     date = argc > 2 ? ToNumber(date) : 1;
@@ -393,119 +493,118 @@ function TimeClip(time) {
     minutes = argc > 4 ? ToNumber(minutes) : 0;
     seconds = argc > 5 ? ToNumber(seconds) : 0;
     ms = argc > 6 ? ToNumber(ms) : 0;
-    year = (!$isNaN(year) && 0 <= TO_INTEGER(year) && TO_INTEGER(year) <= 99)
+    year = (!NUMBER_IS_NAN(year) && 0 <= TO_INTEGER(year) && TO_INTEGER(year) <= 99)
         ? 1900 + TO_INTEGER(year) : year;
     var day = MakeDay(year, month, date);
     var time = MakeTime(hours, minutes, seconds, ms);
-    %_SetValueOf(this, TimeClip(UTC(MakeDate(day, time))));
-  } else {
-    // ECMA 262 - 15.9.2
-    return (new $Date()).toString();
+    value = TimeClip(UTC(MakeDate(day, time)));
   }
+  %_SetValueOf(this, value);
 });
 
 
 // Helper functions.
 function GetTimeFrom(aDate) {
-  if (IS_DATE(aDate)) return %_ValueOf(aDate);
-  throw new $TypeError('this is not a Date object.');
+  return DATE_VALUE(aDate);
 }
 
 
 function GetMillisecondsFrom(aDate) {
-  var t = GetTimeFrom(aDate);
-  if ($isNaN(t)) return t;
+  var t = DATE_VALUE(aDate);
+  if (NUMBER_IS_NAN(t)) return t;
   return msFromTime(LocalTimeNoCheck(t));
 }
 
 
 function GetUTCMillisecondsFrom(aDate) {
-  var t = GetTimeFrom(aDate);
-  if ($isNaN(t)) return t;
+  var t = DATE_VALUE(aDate);
+  if (NUMBER_IS_NAN(t)) return t;
   return msFromTime(t);
 }
 
 
 function GetSecondsFrom(aDate) {
-  var t = GetTimeFrom(aDate);
-  if ($isNaN(t)) return t;
+  var t = DATE_VALUE(aDate);
+  if (NUMBER_IS_NAN(t)) return t;
   return SecFromTime(LocalTimeNoCheck(t));
 }
 
 
 function GetUTCSecondsFrom(aDate) {
-  var t = GetTimeFrom(aDate);
-  if ($isNaN(t)) return t;
+  var t = DATE_VALUE(aDate);
+  if (NUMBER_IS_NAN(t)) return t;
   return SecFromTime(t);
 }
 
 
 function GetMinutesFrom(aDate) {
-  var t = GetTimeFrom(aDate);
-  if ($isNaN(t)) return t;
+  var t = DATE_VALUE(aDate);
+  if (NUMBER_IS_NAN(t)) return t;
   return MinFromTime(LocalTimeNoCheck(t));
 }
 
 
 function GetUTCMinutesFrom(aDate) {
-  var t = GetTimeFrom(aDate);
-  if ($isNaN(t)) return t;
+  var t = DATE_VALUE(aDate);
+  if (NUMBER_IS_NAN(t)) return t;
   return MinFromTime(t);
 }
 
 
 function GetHoursFrom(aDate) {
-  var t = GetTimeFrom(aDate);
-  if ($isNaN(t)) return t;
+  var t = DATE_VALUE(aDate);
+  if (NUMBER_IS_NAN(t)) return t;
   return HourFromTime(LocalTimeNoCheck(t));
 }
 
 
 function GetUTCHoursFrom(aDate) {
-  var t = GetTimeFrom(aDate);
-  if ($isNaN(t)) return t;
+  var t = DATE_VALUE(aDate);
+  if (NUMBER_IS_NAN(t)) return t;
   return HourFromTime(t);
 }
 
 
 function GetFullYearFrom(aDate) {
-  var t = GetTimeFrom(aDate);
-  if ($isNaN(t)) return t;
+  var t = DATE_VALUE(aDate);
+  if (NUMBER_IS_NAN(t)) return t;
+  var cache = Date_cache;
+  if (cache.time === t) return cache.year;
   return YearFromTime(LocalTimeNoCheck(t));
 }
 
 
 function GetUTCFullYearFrom(aDate) {
-  var t = GetTimeFrom(aDate);
-  if ($isNaN(t)) return t;
+  var t = DATE_VALUE(aDate);
+  if (NUMBER_IS_NAN(t)) return t;
   return YearFromTime(t);
 }
 
 
 function GetMonthFrom(aDate) {
-  var t = GetTimeFrom(aDate);
-  if ($isNaN(t)) return t;
+  var t = DATE_VALUE(aDate);
+  if (NUMBER_IS_NAN(t)) return t;
   return MonthFromTime(LocalTimeNoCheck(t));
 }
 
 
 function GetUTCMonthFrom(aDate) {
-  var t = GetTimeFrom(aDate);
-  if ($isNaN(t)) return t;
+  var t = DATE_VALUE(aDate);
+  if (NUMBER_IS_NAN(t)) return t;
   return MonthFromTime(t);
 }
 
 
 function GetDateFrom(aDate) {
-  var t = GetTimeFrom(aDate);
-  if ($isNaN(t)) return t;
+  var t = DATE_VALUE(aDate);
+  if (NUMBER_IS_NAN(t)) return t;
   return DateFromTime(LocalTimeNoCheck(t));
 }
 
 
 function GetUTCDateFrom(aDate) {
-  var t = GetTimeFrom(aDate);
-  if ($isNaN(t)) return t;
+  var t = DATE_VALUE(aDate);
+  if (NUMBER_IS_NAN(t)) return t;
   return DateFromTime(t);
 }
 
@@ -552,11 +651,13 @@ function TimeString(time) {
 
 
 function LocalTimezoneString(time) {
-  var timezoneOffset = (local_time_offset + DaylightSavingsOffset(time)) / msPerMinute;
+  var timezoneOffset =
+      (local_time_offset + DaylightSavingsOffset(time)) / msPerMinute;
   var sign = (timezoneOffset >= 0) ? 1 : -1;
   var hours = FLOOR((sign * timezoneOffset)/60);
   var min   = FLOOR((sign * timezoneOffset)%60);
-  var gmt = ' GMT' + ((sign == 1) ? '+' : '-') + TwoDigitString(hours) + TwoDigitString(min);
+  var gmt = ' GMT' + ((sign == 1) ? '+' : '-') +
+      TwoDigitString(hours) + TwoDigitString(min);
   return gmt + ' (' +  LocalTimezone(time) + ')';
 }
 
@@ -567,7 +668,7 @@ function DatePrintString(time) {
 
 // -------------------------------------------------------------------
 
-// Reused output buffer.
+// Reused output buffer. Used when parsing date strings.
 var parse_buffer = $Array(7);
 
 // ECMA 262 - 15.9.4.2
@@ -597,7 +698,7 @@ function DateUTC(year, month, date, hours, minutes, seconds, ms) {
   minutes = argc > 4 ? ToNumber(minutes) : 0;
   seconds = argc > 5 ? ToNumber(seconds) : 0;
   ms = argc > 6 ? ToNumber(ms) : 0;
-  year = (!$isNaN(year) && 0 <= TO_INTEGER(year) && TO_INTEGER(year) <= 99)
+  year = (!NUMBER_IS_NAN(year) && 0 <= TO_INTEGER(year) && TO_INTEGER(year) <= 99)
       ? 1900 + TO_INTEGER(year) : year;
   var day = MakeDay(year, month, date);
   var time = MakeTime(hours, minutes, seconds, ms);
@@ -614,24 +715,24 @@ function DateNow() {
 
 // ECMA 262 - 15.9.5.2
 function DateToString() {
-  var t = GetTimeFrom(this);
-  if ($isNaN(t)) return kInvalidDate;
+  var t = DATE_VALUE(this);
+  if (NUMBER_IS_NAN(t)) return kInvalidDate;
   return DatePrintString(LocalTimeNoCheck(t)) + LocalTimezoneString(t);
 }
 
 
 // ECMA 262 - 15.9.5.3
 function DateToDateString() {
-  var t = GetTimeFrom(this);
-  if ($isNaN(t)) return kInvalidDate;
+  var t = DATE_VALUE(this);
+  if (NUMBER_IS_NAN(t)) return kInvalidDate;
   return DateString(LocalTimeNoCheck(t));
 }
 
 
 // ECMA 262 - 15.9.5.4
 function DateToTimeString() {
-  var t = GetTimeFrom(this);
-  if ($isNaN(t)) return kInvalidDate;
+  var t = DATE_VALUE(this);
+  if (NUMBER_IS_NAN(t)) return kInvalidDate;
   var lt = LocalTimeNoCheck(t);
   return TimeString(lt) + LocalTimezoneString(lt);
 }
@@ -645,16 +746,16 @@ function DateToLocaleString() {
 
 // ECMA 262 - 15.9.5.6
 function DateToLocaleDateString() {
-  var t = GetTimeFrom(this);
-  if ($isNaN(t)) return kInvalidDate;
+  var t = DATE_VALUE(this);
+  if (NUMBER_IS_NAN(t)) return kInvalidDate;
   return LongDateString(LocalTimeNoCheck(t));
 }
 
 
 // ECMA 262 - 15.9.5.7
 function DateToLocaleTimeString() {
-  var t = GetTimeFrom(this);
-  if ($isNaN(t)) return kInvalidDate;
+  var t = DATE_VALUE(this);
+  if (NUMBER_IS_NAN(t)) return kInvalidDate;
   var lt = LocalTimeNoCheck(t);
   return TimeString(lt);
 }
@@ -662,13 +763,13 @@ function DateToLocaleTimeString() {
 
 // ECMA 262 - 15.9.5.8
 function DateValueOf() {
-  return GetTimeFrom(this);
+  return DATE_VALUE(this);
 }
 
 
 // ECMA 262 - 15.9.5.9
 function DateGetTime() {
-  return GetTimeFrom(this);
+  return DATE_VALUE(this);
 }
 
 
@@ -710,16 +811,16 @@ function DateGetUTCDate() {
 
 // ECMA 262 - 15.9.5.16
 function DateGetDay() {
-  var t = GetTimeFrom(this);
-  if ($isNaN(t)) return t;
+  var t = %_ValueOf(this);
+  if (NUMBER_IS_NAN(t)) return t;
   return WeekDay(LocalTimeNoCheck(t));
 }
 
 
 // ECMA 262 - 15.9.5.17
 function DateGetUTCDay() {
-  var t = GetTimeFrom(this);
-  if ($isNaN(t)) return t;
+  var t = %_ValueOf(this);
+  if (NUMBER_IS_NAN(t)) return t;
   return WeekDay(t);
 }
 
@@ -774,22 +875,22 @@ function DateGetUTCMilliseconds() {
 
 // ECMA 262 - 15.9.5.26
 function DateGetTimezoneOffset() {
-  var t = GetTimeFrom(this);
-  if ($isNaN(t)) return t;
+  var t = DATE_VALUE(this);
+  if (NUMBER_IS_NAN(t)) return t;
   return (t - LocalTimeNoCheck(t)) / msPerMinute;
 }
 
 
 // ECMA 262 - 15.9.5.27
 function DateSetTime(ms) {
-  if (!IS_DATE(this)) throw new $TypeError('this is not a Date object.');
+  if (!IS_DATE(this)) ThrowDateTypeError();
   return %_SetValueOf(this, TimeClip(ToNumber(ms)));
 }
 
 
 // ECMA 262 - 15.9.5.28
 function DateSetMilliseconds(ms) {
-  var t = LocalTime(GetTimeFrom(this));
+  var t = LocalTime(DATE_VALUE(this));
   ms = ToNumber(ms);
   var time = MakeTime(HourFromTime(t), MinFromTime(t), SecFromTime(t), ms);
   return %_SetValueOf(this, TimeClip(UTC(MakeDate(Day(t), time))));
@@ -798,7 +899,7 @@ function DateSetMilliseconds(ms) {
 
 // ECMA 262 - 15.9.5.29
 function DateSetUTCMilliseconds(ms) {
-  var t = GetTimeFrom(this);
+  var t = DATE_VALUE(this);
   ms = ToNumber(ms);
   var time = MakeTime(HourFromTime(t), MinFromTime(t), SecFromTime(t), ms);
   return %_SetValueOf(this, TimeClip(MakeDate(Day(t), time)));
@@ -807,7 +908,7 @@ function DateSetUTCMilliseconds(ms) {
 
 // ECMA 262 - 15.9.5.30
 function DateSetSeconds(sec, ms) {
-  var t = LocalTime(GetTimeFrom(this));
+  var t = LocalTime(DATE_VALUE(this));
   sec = ToNumber(sec);
   ms = %_ArgumentsLength() < 2 ? GetMillisecondsFrom(this) : ToNumber(ms);
   var time = MakeTime(HourFromTime(t), MinFromTime(t), sec, ms);
@@ -817,7 +918,7 @@ function DateSetSeconds(sec, ms) {
 
 // ECMA 262 - 15.9.5.31
 function DateSetUTCSeconds(sec, ms) {
-  var t = GetTimeFrom(this);
+  var t = DATE_VALUE(this);
   sec = ToNumber(sec);
   ms = %_ArgumentsLength() < 2 ? GetUTCMillisecondsFrom(this) : ToNumber(ms);
   var time = MakeTime(HourFromTime(t), MinFromTime(t), sec, ms);
@@ -827,7 +928,7 @@ function DateSetUTCSeconds(sec, ms) {
 
 // ECMA 262 - 15.9.5.33
 function DateSetMinutes(min, sec, ms) {
-  var t = LocalTime(GetTimeFrom(this));
+  var t = LocalTime(DATE_VALUE(this));
   min = ToNumber(min);
   var argc = %_ArgumentsLength();
   sec = argc < 2 ? GetSecondsFrom(this) : ToNumber(sec);
@@ -839,7 +940,7 @@ function DateSetMinutes(min, sec, ms) {
 
 // ECMA 262 - 15.9.5.34
 function DateSetUTCMinutes(min, sec, ms) {
-  var t = GetTimeFrom(this);
+  var t = DATE_VALUE(this);
   min = ToNumber(min);
   var argc = %_ArgumentsLength();
   sec = argc < 2 ? GetUTCSecondsFrom(this) : ToNumber(sec);
@@ -851,7 +952,7 @@ function DateSetUTCMinutes(min, sec, ms) {
 
 // ECMA 262 - 15.9.5.35
 function DateSetHours(hour, min, sec, ms) {
-  var t = LocalTime(GetTimeFrom(this));
+  var t = LocalTime(DATE_VALUE(this));
   hour = ToNumber(hour);
   var argc = %_ArgumentsLength();
   min = argc < 2 ? GetMinutesFrom(this) : ToNumber(min);
@@ -864,7 +965,7 @@ function DateSetHours(hour, min, sec, ms) {
 
 // ECMA 262 - 15.9.5.34
 function DateSetUTCHours(hour, min, sec, ms) {
-  var t = GetTimeFrom(this);
+  var t = DATE_VALUE(this);
   hour = ToNumber(hour);
   var argc = %_ArgumentsLength();
   min = argc < 2 ? GetUTCMinutesFrom(this) : ToNumber(min);
@@ -877,7 +978,7 @@ function DateSetUTCHours(hour, min, sec, ms) {
 
 // ECMA 262 - 15.9.5.36
 function DateSetDate(date) {
-  var t = LocalTime(GetTimeFrom(this));
+  var t = LocalTime(DATE_VALUE(this));
   date = ToNumber(date);
   var day = MakeDay(YearFromTime(t), MonthFromTime(t), date);
   return %_SetValueOf(this, TimeClip(UTC(MakeDate(day, TimeWithinDay(t)))));
@@ -886,7 +987,7 @@ function DateSetDate(date) {
 
 // ECMA 262 - 15.9.5.37
 function DateSetUTCDate(date) {
-  var t = GetTimeFrom(this);
+  var t = DATE_VALUE(this);
   date = ToNumber(date);
   var day = MakeDay(YearFromTime(t), MonthFromTime(t), date);
   return %_SetValueOf(this, TimeClip(MakeDate(day, TimeWithinDay(t))));
@@ -895,7 +996,7 @@ function DateSetUTCDate(date) {
 
 // ECMA 262 - 15.9.5.38
 function DateSetMonth(month, date) {
-  var t = LocalTime(GetTimeFrom(this));
+  var t = LocalTime(DATE_VALUE(this));
   month = ToNumber(month);
   date = %_ArgumentsLength() < 2 ? GetDateFrom(this) : ToNumber(date);
   var day = MakeDay(YearFromTime(t), month, date);
@@ -905,7 +1006,7 @@ function DateSetMonth(month, date) {
 
 // ECMA 262 - 15.9.5.39
 function DateSetUTCMonth(month, date) {
-  var t = GetTimeFrom(this);
+  var t = DATE_VALUE(this);
   month = ToNumber(month);
   date = %_ArgumentsLength() < 2 ? GetUTCDateFrom(this) : ToNumber(date);
   var day = MakeDay(YearFromTime(t), month, date);
@@ -915,8 +1016,8 @@ function DateSetUTCMonth(month, date) {
 
 // ECMA 262 - 15.9.5.40
 function DateSetFullYear(year, month, date) {
-  var t = GetTimeFrom(this);
-  t = $isNaN(t) ? 0 : LocalTimeNoCheck(t);
+  var t = DATE_VALUE(this);
+  t = NUMBER_IS_NAN(t) ? 0 : LocalTimeNoCheck(t);
   year = ToNumber(year);
   var argc = %_ArgumentsLength();
   month = argc < 2 ? MonthFromTime(t) : ToNumber(month);
@@ -928,8 +1029,8 @@ function DateSetFullYear(year, month, date) {
 
 // ECMA 262 - 15.9.5.41
 function DateSetUTCFullYear(year, month, date) {
-  var t = GetTimeFrom(this);
-  if ($isNaN(t)) t = 0;
+  var t = DATE_VALUE(this);
+  if (NUMBER_IS_NAN(t)) t = 0;
   var argc = %_ArgumentsLength();
   year = ToNumber(year);
   month = argc < 2 ? MonthFromTime(t) : ToNumber(month);
@@ -941,8 +1042,8 @@ function DateSetUTCFullYear(year, month, date) {
 
 // ECMA 262 - 15.9.5.42
 function DateToUTCString() {
-  var t = GetTimeFrom(this);
-  if ($isNaN(t)) return kInvalidDate;
+  var t = DATE_VALUE(this);
+  if (NUMBER_IS_NAN(t)) return kInvalidDate;
   // Return UTC string of the form: Sat, 31 Jan 1970 23:00:00 GMT
   return WeekDays[WeekDay(t)] + ', '
       + TwoDigitString(DateFromTime(t)) + ' '
@@ -954,18 +1055,18 @@ function DateToUTCString() {
 
 // ECMA 262 - B.2.4
 function DateGetYear() {
-  var t = GetTimeFrom(this);
-  if ($isNaN(t)) return $NaN;
+  var t = DATE_VALUE(this);
+  if (NUMBER_IS_NAN(t)) return $NaN;
   return YearFromTime(LocalTimeNoCheck(t)) - 1900;
 }
 
 
 // ECMA 262 - B.2.5
 function DateSetYear(year) {
-  var t = LocalTime(GetTimeFrom(this));
-  if ($isNaN(t)) t = 0;
+  var t = LocalTime(DATE_VALUE(this));
+  if (NUMBER_IS_NAN(t)) t = 0;
   year = ToNumber(year);
-  if ($isNaN(year)) return %_SetValueOf(this, $NaN);
+  if (NUMBER_IS_NAN(year)) return %_SetValueOf(this, $NaN);
   year = (0 <= TO_INTEGER(year) && TO_INTEGER(year) <= 99)
       ? 1900 + TO_INTEGER(year) : year;
   var day = MakeDay(year, MonthFromTime(t), DateFromTime(t));
@@ -985,6 +1086,25 @@ function DateToGMTString() {
 }
 
 
+function PadInt(n) {
+  // Format integers to have at least two digits.
+  return n < 10 ? '0' + n : n;
+}
+
+
+function DateToISOString() {
+  return this.getUTCFullYear() + '-' + PadInt(this.getUTCMonth() + 1) +
+      '-' + PadInt(this.getUTCDate()) + 'T' + PadInt(this.getUTCHours()) +
+      ':' + PadInt(this.getUTCMinutes()) + ':' + PadInt(this.getUTCSeconds()) +
+      'Z';
+}
+
+
+function DateToJSON(key) {
+  return CheckJSONPrimitive(this.toISOString());
+}
+
+
 // -------------------------------------------------------------------
 
 function SetupDate() {
@@ -1000,7 +1120,7 @@ function SetupDate() {
 
   // Setup non-enumerable functions of the Date prototype object and
   // set their names.
-  InstallFunctions($Date.prototype, DONT_ENUM, $Array(
+  InstallFunctionsOnHiddenPrototype($Date.prototype, DONT_ENUM, $Array(
     "toString", DateToString,
     "toDateString", DateToDateString,
     "toTimeString", DateToTimeString,
@@ -1044,7 +1164,9 @@ function SetupDate() {
     "toGMTString", DateToGMTString,
     "toUTCString", DateToUTCString,
     "getYear", DateGetYear,
-    "setYear", DateSetYear
+    "setYear", DateSetYear,
+    "toISOString", DateToISOString,
+    "toJSON", DateToJSON
   ));
 }
 

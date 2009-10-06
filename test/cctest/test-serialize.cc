@@ -26,8 +26,6 @@
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include <signal.h>
-#include <map>
-#include <string>
 
 #include "sys/stat.h"
 #include "v8.h"
@@ -42,20 +40,40 @@
 
 using namespace v8::internal;
 
-static int local_counters[256];
-static int counter_count = 0;
-static std::map<std::string, int> counter_table;
+static const unsigned kCounters = 256;
+static int local_counters[kCounters];
+static const char* local_counter_names[kCounters];
+
+
+static unsigned CounterHash(const char* s) {
+  unsigned hash = 0;
+  while (*++s) {
+    hash |= hash << 5;
+    hash += *s;
+  }
+  return hash;
+}
 
 
 // Callback receiver to track counters in test.
 static int* counter_function(const char* name) {
-  std::string counter(name);
-  if (counter_table.find(counter) == counter_table.end()) {
-    local_counters[counter_count] = 0;
-    counter_table[counter] = counter_count++;
+  unsigned hash = CounterHash(name) % kCounters;
+  unsigned original_hash = hash;
+  USE(original_hash);
+  while (true) {
+    if (local_counter_names[hash] == name) {
+      return &local_counters[hash];
+    }
+    if (local_counter_names[hash] == 0) {
+      local_counter_names[hash] = name;
+      return &local_counters[hash];
+    }
+    if (strcmp(local_counter_names[hash], name) == 0) {
+      return &local_counters[hash];
+    }
+    hash = (hash + 1) % kCounters;
+    ASSERT(hash != original_hash);  // Hash table has been filled up.
   }
-
-  return &local_counters[counter_table[counter]];
 }
 
 
@@ -107,12 +125,14 @@ TEST(ExternalReferenceEncoder) {
            encoder.Encode(the_hole_value_location.address()));
   ExternalReference stack_guard_limit_address =
       ExternalReference::address_of_stack_guard_limit();
-  CHECK_EQ(make_code(UNCLASSIFIED, 3),
+  CHECK_EQ(make_code(UNCLASSIFIED, 4),
            encoder.Encode(stack_guard_limit_address.address()));
-  CHECK_EQ(make_code(UNCLASSIFIED, 5),
+  CHECK_EQ(make_code(UNCLASSIFIED, 10),
            encoder.Encode(ExternalReference::debug_break().address()));
   CHECK_EQ(make_code(UNCLASSIFIED, 6),
            encoder.Encode(ExternalReference::new_space_start().address()));
+  CHECK_EQ(make_code(UNCLASSIFIED, 3),
+           encoder.Encode(ExternalReference::roots_address().address()));
 }
 
 
@@ -139,9 +159,9 @@ TEST(ExternalReferenceDecoder) {
   CHECK_EQ(ExternalReference::the_hole_value_location().address(),
            decoder.Decode(make_code(UNCLASSIFIED, 2)));
   CHECK_EQ(ExternalReference::address_of_stack_guard_limit().address(),
-           decoder.Decode(make_code(UNCLASSIFIED, 3)));
+           decoder.Decode(make_code(UNCLASSIFIED, 4)));
   CHECK_EQ(ExternalReference::debug_break().address(),
-           decoder.Decode(make_code(UNCLASSIFIED, 5)));
+           decoder.Decode(make_code(UNCLASSIFIED, 10)));
   CHECK_EQ(ExternalReference::new_space_start().address(),
            decoder.Decode(make_code(UNCLASSIFIED, 6)));
 }

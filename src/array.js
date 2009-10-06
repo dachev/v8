@@ -709,32 +709,154 @@ function ArraySort(comparefn) {
     QuickSort(a, high_start, to);
   }
 
-  var old_length = ToUint32(this.length);
-  if (old_length < 2) return this;
+  // Copies elements in the range 0..length from obj's prototype chain
+  // to obj itself, if obj has holes. Returns one more than the maximal index
+  // of a prototype property.
+  function CopyFromPrototype(obj, length) {
+    var max = 0;
+    for (var proto = obj.__proto__; proto; proto = proto.__proto__) {
+      var indices = %GetArrayKeys(proto, length);
+      if (indices.length > 0) {
+        if (indices[0] == -1) {
+          // It's an interval.
+          var proto_length = indices[1];
+          for (var i = 0; i < proto_length; i++) {
+            if (!obj.hasOwnProperty(i) && proto.hasOwnProperty(i)) {
+              obj[i] = proto[i];
+              if (i >= max) { max = i + 1; }
+            }
+          }
+        } else {
+          for (var i = 0; i < indices.length; i++) {
+            var index = indices[i];
+            if (!IS_UNDEFINED(index) &&
+                !obj.hasOwnProperty(index) && proto.hasOwnProperty(index)) {
+              obj[index] = proto[index];
+              if (index >= max) { max = index + 1; }
+            }
+          }
+        }
+      }
+    }
+    return max;
+  }
 
-  %RemoveArrayHoles(this);
-
-  var length = ToUint32(this.length);
-
-  // Move undefined elements to the end of the array.
-  for (var i = 0; i < length; ) {
-    if (IS_UNDEFINED(this[i])) {
-      length--;
-      this[i] = this[length];
-      this[length] = void 0;
-    } else {
-      i++;
+  // Set a value of "undefined" on all indices in the range from..to
+  // where a prototype of obj has an element. I.e., shadow all prototype
+  // elements in that range.
+  function ShadowPrototypeElements(obj, from, to) {
+    for (var proto = obj.__proto__; proto; proto = proto.__proto__) {
+      var indices = %GetArrayKeys(proto, to);
+      if (indices.length > 0) {
+        if (indices[0] == -1) {
+          // It's an interval.
+          var proto_length = indices[1];
+          for (var i = from; i < proto_length; i++) {
+            if (proto.hasOwnProperty(i)) {
+              obj[i] = void 0;
+            }
+          }
+        } else {
+          for (var i = 0; i < indices.length; i++) {
+            var index = indices[i];
+            if (!IS_UNDEFINED(index) && from <= index &&
+                proto.hasOwnProperty(index)) {
+              obj[index] = void 0;
+            }
+          }
+        }
+      }
     }
   }
 
-  QuickSort(this, 0, length);
+  function SafeRemoveArrayHoles(obj) {
+    // Copy defined elements from the end to fill in all holes and undefineds
+    // in the beginning of the array.  Write undefineds and holes at the end
+    // after loop is finished.
+    var first_undefined = 0;
+    var last_defined = length - 1;
+    var num_holes = 0;
+    while (first_undefined < last_defined) {
+      // Find first undefined element.
+      while (first_undefined < last_defined &&
+             !IS_UNDEFINED(obj[first_undefined])) {
+        first_undefined++;
+      }
+      // Maintain the invariant num_holes = the number of holes in the original
+      // array with indices <= first_undefined or > last_defined.
+      if (!obj.hasOwnProperty(first_undefined)) {
+        num_holes++;
+      }
 
-  // We only changed the length of the this object (in
-  // RemoveArrayHoles) if it was an array.  We are not allowed to set
-  // the length of the this object if it is not an array because this
-  // might introduce a new length property.
-  if (IS_ARRAY(this)) {
-    this.length = old_length;
+      // Find last defined element.
+      while (first_undefined < last_defined &&
+             IS_UNDEFINED(obj[last_defined])) {
+        if (!obj.hasOwnProperty(last_defined)) {
+          num_holes++;
+        }
+        last_defined--;
+      }
+      if (first_undefined < last_defined) {
+        // Fill in hole or undefined.
+        obj[first_undefined] = obj[last_defined];
+        obj[last_defined] = void 0;
+      }
+    }
+    // If there were any undefineds in the entire array, first_undefined
+    // points to one past the last defined element.  Make this true if
+    // there were no undefineds, as well, so that first_undefined == number
+    // of defined elements.
+    if (!IS_UNDEFINED(obj[first_undefined])) first_undefined++;
+    // Fill in the undefineds and the holes.  There may be a hole where
+    // an undefined should be and vice versa.
+    var i;
+    for (i = first_undefined; i < length - num_holes; i++) {
+      obj[i] = void 0;
+    }
+    for (i = length - num_holes; i < length; i++) {
+      // For compatability with Webkit, do not expose elements in the prototype.
+      if (i in obj.__proto__) {
+        obj[i] = void 0;
+      } else {
+        delete obj[i];
+      }
+    }
+
+    // Return the number of defined elements.
+    return first_undefined;
+  }
+
+  var length = ToUint32(this.length);
+  if (length < 2) return this;
+
+  var is_array = IS_ARRAY(this);
+  var max_prototype_element;
+  if (!is_array) {
+    // For compatibility with JSC, we also sort elements inherited from
+    // the prototype chain on non-Array objects.
+    // We do this by copying them to this object and sorting only
+    // local elements. This is not very efficient, but sorting with
+    // inherited elements happens very, very rarely, if at all.
+    // The specification allows "implementation dependent" behavior
+    // if an element on the prototype chain has an element that
+    // might interact with sorting.
+    max_prototype_element = CopyFromPrototype(this, length);
+  }
+
+  var num_non_undefined = %RemoveArrayHoles(this, length);
+  if (num_non_undefined == -1) {
+    // There were indexed accessors in the array.  Move array holes and
+    // undefineds to the end using a Javascript function that is safe
+    // in the presence of accessors.
+    num_non_undefined = SafeRemoveArrayHoles(this);
+  }
+
+  QuickSort(this, 0, num_non_undefined);
+
+  if (!is_array && (num_non_undefined + 1 < max_prototype_element)) {
+    // For compatibility with JSC, we shadow any elements in the prototype
+    // chain that has become exposed by sort moving a hole to its position.
+    ShadowPrototypeElements(this, num_non_undefined, max_prototype_element);
   }
 
   return this;
@@ -879,6 +1001,62 @@ function ArrayLastIndexOf(element, index) {
 }
 
 
+function ArrayReduce(callback, current) {
+  if (!IS_FUNCTION(callback)) {
+    throw MakeTypeError('called_non_callable', [callback]);
+  }
+  // Pull out the length so that modifications to the length in the
+  // loop will not affect the looping.
+  var length = this.length;
+  var i = 0;
+
+  find_initial: if (%_ArgumentsLength() < 2) {
+    for (; i < length; i++) {
+      current = this[i];
+      if (!IS_UNDEFINED(current) || i in this) {
+        i++;
+        break find_initial;
+      }
+    }
+    throw MakeTypeError('reduce_no_initial', []);
+  }
+
+  for (; i < length; i++) {
+    var element = this[i];
+    if (!IS_UNDEFINED(element) || i in this) {
+      current = callback.call(null, current, element, i, this);
+    }
+  }
+  return current;
+}
+
+function ArrayReduceRight(callback, current) {
+  if (!IS_FUNCTION(callback)) {
+    throw MakeTypeError('called_non_callable', [callback]);
+  }
+  var i = this.length - 1;
+
+  find_initial: if (%_ArgumentsLength() < 2) {
+    for (; i >= 0; i--) {
+      current = this[i];
+      if (!IS_UNDEFINED(current) || i in this) {
+        i--;
+        break find_initial;
+      }
+    }
+    throw MakeTypeError('reduce_no_initial', []);
+  }
+
+  for (; i >= 0; i--) {
+    var element = this[i];
+    if (!IS_UNDEFINED(element) || i in this) {
+      current = callback.call(null, current, element, i, this);
+    }
+  }
+  return current;
+}
+
+
 // -------------------------------------------------------------------
 
 
@@ -890,7 +1068,6 @@ function UpdateFunctionLengths(lengths) {
 
 
 // -------------------------------------------------------------------
-
 function SetupArray() {
   // Setup non-enumerable constructor property on the Array.prototype
   // object.
@@ -898,7 +1075,7 @@ function SetupArray() {
 
   // Setup non-enumerable functions of the Array.prototype object and
   // set their names.
-  InstallFunctions($Array.prototype, DONT_ENUM, $Array(
+  InstallFunctionsOnHiddenPrototype($Array.prototype, DONT_ENUM, $Array(
     "toString", ArrayToString,
     "toLocaleString", ArrayToLocaleString,
     "join", ArrayJoin,
@@ -917,8 +1094,9 @@ function SetupArray() {
     "every", ArrayEvery,
     "map", ArrayMap,
     "indexOf", ArrayIndexOf,
-    "lastIndexOf", ArrayLastIndexOf
-  ));
+    "lastIndexOf", ArrayLastIndexOf,
+    "reduce", ArrayReduce,
+    "reduceRight", ArrayReduceRight));
 
   // Manipulate the length of some of the functions to meet
   // expectations set by ECMA-262 or Mozilla.
@@ -930,7 +1108,9 @@ function SetupArray() {
     ArrayMap: 1,
     ArrayIndexOf: 1,
     ArrayLastIndexOf: 1,
-    ArrayPush: 1
+    ArrayPush: 1,
+    ArrayReduce: 1,
+    ArrayReduceRight: 1
   });
 }
 

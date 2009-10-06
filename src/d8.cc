@@ -146,20 +146,49 @@ bool Shell::ExecuteString(Handle<String> source,
 
 
 Handle<Value> Shell::Print(const Arguments& args) {
-  bool first = true;
+  Handle<Value> val = Write(args);
+  printf("\n");
+  return val;
+}
+
+
+Handle<Value> Shell::Write(const Arguments& args) {
   for (int i = 0; i < args.Length(); i++) {
     HandleScope handle_scope;
-    if (first) {
-      first = false;
-    } else {
+    if (i != 0) {
       printf(" ");
     }
     v8::String::Utf8Value str(args[i]);
     const char* cstr = ToCString(str);
     printf("%s", cstr);
   }
-  printf("\n");
   return Undefined();
+}
+
+
+Handle<Value> Shell::Read(const Arguments& args) {
+  String::Utf8Value file(args[0]);
+  if (*file == NULL) {
+    return ThrowException(String::New("Error loading file"));
+  }
+  Handle<String> source = ReadFile(*file);
+  if (source.IsEmpty()) {
+    return ThrowException(String::New("Error loading file"));
+  }
+  return source;
+}
+
+
+Handle<Value> Shell::ReadLine(const Arguments& args) {
+  char line_buf[256];
+  if (fgets(line_buf, sizeof(line_buf), stdin) == NULL) {
+    return ThrowException(String::New("Error reading line"));
+  }
+  int len = strlen(line_buf);
+  if (line_buf[len - 1] == '\n') {
+    --len;
+  }
+  return String::New(line_buf, len);
 }
 
 
@@ -246,6 +275,7 @@ Handle<Array> Shell::GetCompletions(Handle<String> text, Handle<String> full) {
 }
 
 
+#ifdef ENABLE_DEBUGGER_SUPPORT
 Handle<Object> Shell::DebugMessageDetails(Handle<String> message) {
   Context::Scope context_scope(utility_context_);
   Handle<Object> global = utility_context_->Global();
@@ -266,14 +296,22 @@ Handle<Value> Shell::DebugCommandToJSONRequest(Handle<String> command) {
   Handle<Value> val = Handle<Function>::Cast(fun)->Call(global, kArgc, argv);
   return val;
 }
+#endif
 
 
-int32_t* Counter::Bind(const char* name) {
+int32_t* Counter::Bind(const char* name, bool is_histogram) {
   int i;
   for (i = 0; i < kMaxNameSize - 1 && name[i]; i++)
     name_[i] = static_cast<char>(name[i]);
   name_[i] = '\0';
-  return &counter_;
+  is_histogram_ = is_histogram;
+  return ptr();
+}
+
+
+void Counter::AddSample(int32_t sample) {
+  count_++;
+  sample_total_ += sample;
 }
 
 
@@ -302,6 +340,8 @@ void Shell::MapCounters(const char* name) {
   }
   counters_ = static_cast<CounterCollection*>(memory);
   V8::SetCounterFunction(LookupCounter);
+  V8::SetCreateHistogramFunction(CreateHistogram);
+  V8::SetAddHistogramSampleFunction(AddHistogramSample);
 }
 
 
@@ -316,15 +356,44 @@ int CounterMap::Hash(const char* name) {
 }
 
 
-int* Shell::LookupCounter(const char* name) {
+Counter* Shell::GetCounter(const char* name, bool is_histogram) {
   Counter* counter = counter_map_->Lookup(name);
+
+  if (counter == NULL) {
+    counter = counters_->GetNextCounter();
+    if (counter != NULL) {
+      counter_map_->Set(name, counter);
+      counter->Bind(name, is_histogram);
+    }
+  } else {
+    ASSERT(counter->is_histogram() == is_histogram);
+  }
+  return counter;
+}
+
+
+int* Shell::LookupCounter(const char* name) {
+  Counter* counter = GetCounter(name, false);
+
   if (counter != NULL) {
     return counter->ptr();
+  } else {
+    return NULL;
   }
-  Counter* result = counters_->GetNextCounter();
-  if (result == NULL) return NULL;
-  counter_map_->Set(name, result);
-  return result->Bind(name);
+}
+
+
+void* Shell::CreateHistogram(const char* name,
+                             int min,
+                             int max,
+                             size_t buckets) {
+  return GetCounter(name, true);
+}
+
+
+void Shell::AddHistogramSample(void* histogram, int sample) {
+  Counter* counter = reinterpret_cast<Counter*>(histogram);
+  counter->AddSample(sample);
 }
 
 
@@ -333,12 +402,20 @@ void Shell::Initialize() {
   // Set up counters
   if (i::FLAG_map_counters != NULL)
     MapCounters(i::FLAG_map_counters);
-  if (i::FLAG_dump_counters)
+  if (i::FLAG_dump_counters) {
     V8::SetCounterFunction(LookupCounter);
+    V8::SetCreateHistogramFunction(CreateHistogram);
+    V8::SetAddHistogramSampleFunction(AddHistogramSample);
+  }
+
   // Initialize the global objects
   HandleScope scope;
   Handle<ObjectTemplate> global_template = ObjectTemplate::New();
   global_template->Set(String::New("print"), FunctionTemplate::New(Print));
+  global_template->Set(String::New("write"), FunctionTemplate::New(Write));
+  global_template->Set(String::New("read"), FunctionTemplate::New(Read));
+  global_template->Set(String::New("readline"),
+                       FunctionTemplate::New(ReadLine));
   global_template->Set(String::New("load"), FunctionTemplate::New(Load));
   global_template->Set(String::New("quit"), FunctionTemplate::New(Quit));
   global_template->Set(String::New("version"), FunctionTemplate::New(Version));
@@ -364,11 +441,13 @@ void Shell::Initialize() {
   global_template->Set(String::New("arguments"),
                        Utils::ToLocal(arguments_jsarray));
 
+#ifdef ENABLE_DEBUGGER_SUPPORT
   // Install the debugger object in the utility scope
   i::Debug::Load();
   i::JSObject* debug = i::Debug::debug_context()->global();
   utility_context_->Global()->Set(String::New("$debug"),
                                   Utils::ToLocal(&debug));
+#endif
 
   // Run the d8 shell utility script in the utility context
   int source_index = i::NativesCollection<i::D8>::GetIndex("d8");
@@ -388,14 +467,26 @@ void Shell::Initialize() {
   i::Handle<i::JSFunction> script_fun = Utils::OpenHandle(*script);
   i::Handle<i::Script> script_object =
       i::Handle<i::Script>(i::Script::cast(script_fun->shared()->script()));
-  script_object->set_type(i::Smi::FromInt(i::SCRIPT_TYPE_NATIVE));
+  script_object->set_type(i::Smi::FromInt(i::Script::TYPE_NATIVE));
 
   // Create the evaluation context
   evaluation_context_ = Context::New(NULL, global_template);
   evaluation_context_->SetSecurityToken(Undefined());
 
+#ifdef ENABLE_DEBUGGER_SUPPORT
   // Set the security token of the debug context to allow access.
   i::Debug::debug_context()->set_security_token(i::Heap::undefined_value());
+
+  // Start the debugger agent if requested.
+  if (i::FLAG_debugger_agent) {
+    v8::Debug::EnableAgent("d8 shell", i::FLAG_debugger_port);
+  }
+
+  // Start the in-process debugger if requested.
+  if (i::FLAG_debugger && !i::FLAG_debugger_agent) {
+    v8::Debug::SetDebugEventListener(HandleDebugEvent);
+  }
+#endif
 }
 
 
@@ -406,7 +497,14 @@ void Shell::OnExit() {
     ::printf("+----------------------------------------+-------------+\n");
     for (CounterMap::Iterator i(counter_map_); i.More(); i.Next()) {
       Counter* counter = i.CurrentValue();
-      ::printf("| %-38s | %11i |\n", i.CurrentKey(), counter->value());
+      if (counter->is_histogram()) {
+        ::printf("| c:%-36s | %11i |\n", i.CurrentKey(), counter->count());
+        ::printf("| t:%-36s | %11i |\n",
+                 i.CurrentKey(),
+                 counter->sample_total());
+      } else {
+        ::printf("| %-38s | %11i |\n", i.CurrentKey(), counter->count());
+      }
     }
     ::printf("+----------------------------------------+-------------+\n");
   }
@@ -415,7 +513,7 @@ void Shell::OnExit() {
 }
 
 
-static char* ReadChars(const char *name, int* size_out) {
+static char* ReadChars(const char* name, int* size_out) {
   v8::Unlocker unlocker;  // Release the V8 lock while reading files.
   FILE* file = i::OS::FOpen(name, "rb");
   if (file == NULL) return NULL;
@@ -506,6 +604,12 @@ void ShellThread::Run() {
   Handle<ObjectTemplate> global_template = ObjectTemplate::New();
   global_template->Set(String::New("print"),
                        FunctionTemplate::New(Shell::Print));
+  global_template->Set(String::New("write"),
+                       FunctionTemplate::New(Shell::Write));
+  global_template->Set(String::New("read"),
+                       FunctionTemplate::New(Shell::Read));
+  global_template->Set(String::New("readline"),
+                       FunctionTemplate::New(Shell::ReadLine));
   global_template->Set(String::New("load"),
                        FunctionTemplate::New(Shell::Load));
   global_template->Set(String::New("yield"),
@@ -585,7 +689,7 @@ int Shell::Main(int argc, char* argv[]) {
         use_preemption = false;
       } else if (strcmp(str, "--preemption-interval") == 0) {
         if (i + 1 < argc) {
-          char *end = NULL;
+          char* end = NULL;
           preemption_interval = strtol(argv[++i], &end, 10);  // NOLINT
           if (preemption_interval <= 0 || *end != '\0' || errno == ERANGE) {
             printf("Invalid value for --preemption-interval '%s'\n", argv[i]);
@@ -613,9 +717,9 @@ int Shell::Main(int argc, char* argv[]) {
         i++;
       } else if (strcmp(str, "-p") == 0 && i + 1 < argc) {
         int size = 0;
-        const char *files = ReadChars(argv[++i], &size);
+        const char* files = ReadChars(argv[++i], &size);
         if (files == NULL) return 1;
-        ShellThread *thread =
+        ShellThread* thread =
             new ShellThread(threads.length(),
                             i::Vector<const char>(files, size));
         thread->Start();
@@ -641,26 +745,18 @@ int Shell::Main(int argc, char* argv[]) {
       Locker::StartPreemption(preemption_interval);
     }
 
+#ifdef ENABLE_DEBUGGER_SUPPORT
     // Run the remote debugger if requested.
     if (i::FLAG_remote_debugger) {
       RunRemoteDebugger(i::FLAG_debugger_port);
       return 0;
     }
-
-    // Start the debugger agent if requested.
-    if (i::FLAG_debugger_agent) {
-      v8::Debug::EnableAgent("d8 shell", i::FLAG_debugger_port);
-    }
-
-    // Start the in-process debugger if requested.
-    if (i::FLAG_debugger && !i::FLAG_debugger_agent) {
-      v8::Debug::SetDebugEventListener(HandleDebugEvent);
-    }
+#endif
   }
   if (run_shell)
     RunShell();
   for (int i = 0; i < threads.length(); i++) {
-    i::Thread *thread = threads[i];
+    i::Thread* thread = threads[i];
     thread->Join();
     delete thread;
   }

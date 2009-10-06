@@ -28,7 +28,8 @@
 #ifndef V8_LIST_H_
 #define V8_LIST_H_
 
-namespace v8 { namespace internal {
+namespace v8 {
+namespace internal {
 
 
 // ----------------------------------------------------------------------------
@@ -77,6 +78,9 @@ class List {
   // expanding the list if necessary.
   void Add(const T& element);
 
+  // Add all the elements from the argument list to this list.
+  void AddAll(const List<T, P>& other);
+
   // Added 'count' elements with the value 'value' and returns a
   // vector that allows access to the elements.  The vector is valid
   // until the next change is made to this list.
@@ -118,9 +122,27 @@ class List {
   INLINE(T* NewData(int n))  { return static_cast<T*>(P::New(n * sizeof(T))); }
   INLINE(void DeleteData(T* data))  { P::Delete(data); }
 
+  // Increase the capacity of a full list, and add an element.
+  // List must be full already.
+  void ResizeAdd(const T& element);
+
+  // Inlined implementation of ResizeAdd, shared by inlined and
+  // non-inlined versions of ResizeAdd.
+  void ResizeAddInternal(const T& element);
+
+  // Resize the list.
+  void Resize(int new_capacity);
+
   DISALLOW_COPY_AND_ASSIGN(List);
 };
 
+class FrameElement;
+
+// Add() is inlined, ResizeAdd() called by Add() is inlined except for
+// Lists of FrameElements, and ResizeAddInternal() is inlined in ResizeAdd().
+template <>
+void List<FrameElement,
+          FreeStoreAllocationPolicy>::ResizeAdd(const FrameElement& element);
 
 } }  // namespace v8::internal
 

@@ -28,7 +28,8 @@
 #ifndef V8_MARK_COMPACT_H_
 #define V8_MARK_COMPACT_H_
 
-namespace v8 { namespace internal {
+namespace v8 {
+namespace internal {
 
 // Callback function, returns whether an object is alive. The heap size
 // of the object is returned in size. It optionally updates the offset
@@ -74,6 +75,12 @@ class MarkCompactCollector: public AllStatic {
   // Type of functions to process non-live objects.
   typedef void (*ProcessNonLiveFunction)(HeapObject* object);
 
+  // Set the global force_compaction flag, it must be called before Prepare
+  // to take effect.
+  static void SetForceCompaction(bool value) {
+    force_compaction_ = value;
+  }
+
   // Prepares for GC by resetting relocation info in old and map spaces and
   // choosing spaces to compact.
   static void Prepare(GCTracer* tracer);
@@ -116,6 +123,10 @@ class MarkCompactCollector: public AllStatic {
   // The current stage of the collector.
   static CollectorState state_;
 #endif
+
+  // Global flag that forces a compaction.
+  static bool force_compaction_;
+
   // Global flag indicating whether spaces were compacted on the last GC.
   static bool compacting_collection_;
 
@@ -172,7 +183,11 @@ class MarkCompactCollector: public AllStatic {
   static void MarkDescriptorArray(DescriptorArray* descriptors);
 
   // Mark the heap roots and all objects reachable from them.
-  static void ProcessRoots(RootMarkingVisitor* visitor);
+  static void MarkRoots(RootMarkingVisitor* visitor);
+
+  // Mark the symbol table specially.  References to symbols from the
+  // symbol table are weak.
+  static void MarkSymbolTable();
 
   // Mark objects in object groups that have at least one object in the
   // group marked.
@@ -198,8 +213,9 @@ class MarkCompactCollector: public AllStatic {
   // flag on the marking stack.
   static void RefillMarkingStack();
 
-  // Callback function for telling whether the object *p must be marked.
-  static bool MustBeMarked(Object** p);
+  // Callback function for telling whether the object *p is an unmarked
+  // heap object.
+  static bool IsUnmarkedHeapObject(Object** p);
 
 #ifdef DEBUG
   static void UpdateLiveObjectCount(HeapObject* obj);
@@ -287,6 +303,7 @@ class MarkCompactCollector: public AllStatic {
   static void DeallocateOldDataBlock(Address start, int size_in_bytes);
   static void DeallocateCodeBlock(Address start, int size_in_bytes);
   static void DeallocateMapBlock(Address start, int size_in_bytes);
+  static void DeallocateCellBlock(Address start, int size_in_bytes);
 
   // If we are not compacting the heap, we simply sweep the spaces except
   // for the large object space, clearing mark bits and adding unmarked
@@ -346,8 +363,12 @@ class MarkCompactCollector: public AllStatic {
   static int RelocateOldPointerObject(HeapObject* obj);
   static int RelocateOldDataObject(HeapObject* obj);
 
+  // Relocate a property cell object.
+  static int RelocateCellObject(HeapObject* obj);
+
   // Helper function.
-  static inline int RelocateOldNonCodeObject(HeapObject* obj, OldSpace* space);
+  static inline int RelocateOldNonCodeObject(HeapObject* obj,
+                                             PagedSpace* space);
 
   // Relocates an object in the code space.
   static int RelocateCodeObject(HeapObject* obj);
@@ -386,6 +407,9 @@ class MarkCompactCollector: public AllStatic {
 
   // Number of live objects in Heap::map_space_.
   static int live_map_objects_;
+
+  // Number of live objects in Heap::cell_space_.
+  static int live_cell_objects_;
 
   // Number of live objects in Heap::lo_space_.
   static int live_lo_objects_;

@@ -31,7 +31,8 @@
 #include "scopes.h"
 #include "string-stream.h"
 
-namespace v8 { namespace internal {
+namespace v8 {
+namespace internal {
 
 
 VariableProxySentinel VariableProxySentinel::this_proxy_(true);
@@ -50,7 +51,7 @@ CallEval CallEval::sentinel_(NULL, NULL, 0);
     if (v->CheckStackOverflow()) return; \
     v->Visit##type(this);                \
   }
-NODE_LIST(DECL_ACCEPT)
+AST_NODE_LIST(DECL_ACCEPT)
 #undef DECL_ACCEPT
 
 
@@ -67,7 +68,7 @@ VariableProxy::VariableProxy(Handle<String> name,
   // names must be canonicalized for fast equality checks
   ASSERT(name->IsSymbol());
   // at least one access, otherwise no need for a VariableProxy
-  var_uses_.RecordAccess(1);
+  var_uses_.RecordRead(1);
 }
 
 
@@ -149,6 +150,27 @@ ObjectLiteral::Property::Property(bool is_getter, FunctionLiteral* value) {
   key_ = new Literal(value->name());
   value_ = value;
   kind_ = is_getter ? GETTER : SETTER;
+}
+
+
+bool ObjectLiteral::IsValidJSON() {
+  int length = properties()->length();
+  for (int i = 0; i < length; i++) {
+    Property* prop = properties()->at(i);
+    if (!prop->value()->IsValidJSON())
+      return false;
+  }
+  return true;
+}
+
+
+bool ArrayLiteral::IsValidJSON() {
+  int length = values()->length();
+  for (int i = 0; i < length; i++) {
+    if (!values()->at(i)->IsValidJSON())
+      return false;
+  }
+  return true;
 }
 
 

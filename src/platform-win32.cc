@@ -58,6 +58,12 @@
 
 #include <time.h>  // For LocalOffset() implementation.
 #include <mmsystem.h>  // For timeGetTime().
+#ifdef __MINGW32__
+// Require Windows XP or higher when compiling with MinGW. This is for MinGW
+// header files to expose getaddrinfo.
+#undef _WIN32_WINNT
+#define _WIN32_WINNT 0x501
+#endif  // __MINGW32__
 #ifndef __MINGW32__
 #include <dbghelp.h>  // For SymLoadModule64 and al.
 #endif  // __MINGW32__
@@ -210,7 +216,8 @@ int random() {
 }
 
 
-namespace v8 { namespace internal {
+namespace v8 {
+namespace internal {
 
 double ceiling(double x) {
   return ceil(x);
@@ -596,7 +603,7 @@ int64_t OS::Ticks() {
 
 // Returns a string identifying the current timezone taking into
 // account daylight saving.
-char* OS::LocalTimezone(double time) {
+const char* OS::LocalTimezone(double time) {
   return Time(time).LocalTimezone();
 }
 
@@ -1161,7 +1168,7 @@ void OS::LogSharedLibraryAddresses() {
 // it is triggered by the use of inline assembler.
 #pragma warning(push)
 #pragma warning(disable : 4748)
-int OS::StackWalk(OS::StackFrame* frames, int frames_size) {
+int OS::StackWalk(Vector<OS::StackFrame> frames) {
   BOOL ok;
 
   // Load the required functions from DLL's.
@@ -1179,6 +1186,9 @@ int OS::StackWalk(OS::StackFrame* frames, int frames_size) {
   memset(&context, 0, sizeof(context));
   context.ContextFlags = CONTEXT_CONTROL;
   context.ContextFlags = CONTEXT_CONTROL;
+#ifdef  _WIN64
+  // TODO(X64): Implement context capture.
+#else
   __asm    call x
   __asm x: pop eax
   __asm    mov context.Eip, eax
@@ -1188,19 +1198,27 @@ int OS::StackWalk(OS::StackFrame* frames, int frames_size) {
   // capture the context instead of inline assembler. However it is
   // only available on XP, Vista, Server 2003 and Server 2008 which
   // might not be sufficient.
+#endif
 
   // Initialize the stack walking
   STACKFRAME64 stack_frame;
   memset(&stack_frame, 0, sizeof(stack_frame));
+#ifdef  _WIN64
+  stack_frame.AddrPC.Offset = context.Rip;
+  stack_frame.AddrFrame.Offset = context.Rbp;
+  stack_frame.AddrStack.Offset = context.Rsp;
+#else
   stack_frame.AddrPC.Offset = context.Eip;
-  stack_frame.AddrPC.Mode = AddrModeFlat;
   stack_frame.AddrFrame.Offset = context.Ebp;
-  stack_frame.AddrFrame.Mode = AddrModeFlat;
   stack_frame.AddrStack.Offset = context.Esp;
+#endif
+  stack_frame.AddrPC.Mode = AddrModeFlat;
+  stack_frame.AddrFrame.Mode = AddrModeFlat;
   stack_frame.AddrStack.Mode = AddrModeFlat;
   int frames_count = 0;
 
   // Collect stack frames.
+  int frames_size = frames.length();
   while (frames_count < frames_size) {
     ok = _StackWalk64(
         IMAGE_FILE_MACHINE_I386,    // MachineType
@@ -1284,7 +1302,7 @@ int OS::StackWalk(OS::StackFrame* frames, int frames_size) {
 
 #else  // __MINGW32__
 void OS::LogSharedLibraryAddresses() { }
-int OS::StackWalk(OS::StackFrame* frames, int frames_size) { return 0; }
+int OS::StackWalk(Vector<OS::StackFrame> frames) { return 0; }
 #endif  // __MINGW32__
 
 
@@ -1299,8 +1317,11 @@ double OS::nan_value() {
 
 
 int OS::ActivationFrameAlignment() {
-  // Floating point code runs faster if the stack is 8-byte aligned.
-  return 8;
+#ifdef _WIN64
+  return 16;  // Windows 64-bit ABI requires the stack to be 16-byte aligned.
+#else
+  return 8;  // Floating-point math runs faster with 8-byte alignment.
+#endif
 }
 
 
@@ -1768,24 +1789,29 @@ class Sampler::PlatformData : public Malloced {
       TickSample sample;
 
       // If profiling, we record the pc and sp of the profiled thread.
-      if (sampler_->IsProfiling()) {
-        // Pause the profiled thread and get its context.
-        SuspendThread(profiled_thread_);
+      if (sampler_->IsProfiling()
+          && SuspendThread(profiled_thread_) != (DWORD)-1) {
         context.ContextFlags = CONTEXT_FULL;
-        GetThreadContext(profiled_thread_, &context);
-        // Invoke tick handler with program counter and stack pointer.
-        sample.pc = context.Eip;
-        sample.sp = context.Esp;
-        sample.fp = context.Ebp;
+        if (GetThreadContext(profiled_thread_, &context) != 0) {
+#if V8_HOST_ARCH_X64
+          UNIMPLEMENTED();
+          sample.pc = context.Rip;
+          sample.sp = context.Rsp;
+          sample.fp = context.Rbp;
+#else
+          sample.pc = context.Eip;
+          sample.sp = context.Esp;
+          sample.fp = context.Ebp;
+#endif
+          sampler_->SampleStack(&sample);
+        }
+        ResumeThread(profiled_thread_);
       }
 
       // We always sample the VM state.
       sample.state = Logger::state();
+      // Invoke tick handler with program counter and stack pointer.
       sampler_->Tick(&sample);
-
-      if (sampler_->IsProfiling()) {
-        ResumeThread(profiled_thread_);
-      }
 
       // Wait until next sampling.
       Sleep(sampler_->interval_);

@@ -1,4 +1,4 @@
-# Copyright 2008 the V8 project authors. All rights reserved.
+# Copyright 2009 the V8 project authors. All rights reserved.
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions are
 # met:
@@ -88,17 +88,18 @@ js1_5/GC/regress-348532: SLOW
 ##################### FLAKY TESTS #####################
 
 # These tests time out in debug mode but pass in product mode
+js1_5/Regress/regress-360969-03: PASS || TIMEOUT if $mode == debug
+js1_5/Regress/regress-360969-04: PASS || TIMEOUT if $mode == debug
+js1_5/Regress/regress-360969-05: PASS || TIMEOUT if $mode == debug
+js1_5/Regress/regress-360969-06: PASS || TIMEOUT if $mode == debug
+js1_5/extensions/regress-365527: PASS || TIMEOUT if $mode == debug
+
 js1_5/Regress/regress-280769-3: PASS || FAIL if $mode == debug
 js1_5/Regress/regress-203278-1: PASS || FAIL if $mode == debug
 js1_5/GC/regress-203278-2: PASS || FAIL if $mode == debug
 js1_5/Regress/regress-244470: PASS || FAIL if $mode == debug
 ecma_3/RegExp/regress-209067: PASS || FAIL if $mode == debug
 js1_5/GC/regress-278725: PASS || FAIL if $mode == debug
-js1_5/Regress/regress-360969-03: PASS || FAIL if $mode == debug
-js1_5/Regress/regress-360969-04: PASS || FAIL if $mode == debug
-js1_5/Regress/regress-360969-05: PASS || FAIL if $mode == debug
-js1_5/Regress/regress-360969-06: PASS || FAIL if $mode == debug
-js1_5/extensions/regress-365527: PASS || FAIL if $mode == debug
 # http://b/issue?id=1206983
 js1_5/Regress/regress-367561-03: PASS || FAIL if $mode == debug
 ecma/Date/15.9.5.10-2: PASS || FAIL if $mode == debug
@@ -148,7 +149,7 @@ js1_5/String/regress-322772: PASS || FAIL
 js1_5/Array/regress-99120-01: PASS || FAIL
 js1_5/Array/regress-99120-02: PASS || FAIL
 js1_5/Regress/regress-347306-01: PASS || FAIL
-js1_5/Regress/regress-416628: PASS || FAIL
+js1_5/Regress/regress-416628: PASS || FAIL || TIMEOUT if $mode == debug
 
 
 # The following two tests assume that daylight savings time starts first Sunday
@@ -170,7 +171,7 @@ js1_5/Regress/regress-98901: PASS || FAIL
 
 # Tests that sorting arrays of ints is less than 3 times as fast
 # as sorting arrays of strings.
-js1_5/extensions/regress-371636: PASS || FAIL
+js1_5/extensions/regress-371636: PASS || FAIL || TIMEOUT if $mode == debug
 
 
 # Tests depend on GC timings. Inherently flaky.
@@ -203,7 +204,7 @@ ecma/String/15.5.4.12-4: FAIL_OK
 ecma/String/15.5.4.12-5: FAIL_OK
 
 # Creates a linked list of arrays until we run out of memory or timeout.
-js1_5/Regress/regress-312588: FAIL_OK
+js1_5/Regress/regress-312588: FAIL || TIMEOUT
 
 
 # Runs out of memory because it compiles huge functions.
@@ -247,14 +248,14 @@ js1_5/extensions/regress-459606: PASS || FAIL_OK
 # PCRE's match limit is reached.  SpiderMonkey hangs on the first one,
 # JSC returns true somehow.  Maybe they up the match limit?  There is
 # an open V8 bug 676063 about this.
-ecma_3/RegExp/regress-330684: FAIL_OK
+ecma_3/RegExp/regress-330684: TIMEOUT
 
 
 # This test contains a regexp that runs exponentially long.  Spidermonkey
 # standalone will hang, though apparently inside Firefox it will trigger a
 # long-running-script timeout.  JSCRE passes by hitting the matchLimit and
 # just pretending that an exhaustive search found no match.
-ecma_3/RegExp/regress-307456: PASS || FAIL_OK
+ecma_3/RegExp/regress-307456: PASS || TIMEOUT
 
 
 # We do not detect overflow in bounds for back references and {}
@@ -275,6 +276,11 @@ js1_2/regexp/RegExp_multiline: FAIL_OK
 js1_2/regexp/RegExp_multiline_as_array: FAIL_OK
 js1_2/regexp/beginLine: FAIL_OK
 js1_2/regexp/endLine: FAIL_OK
+
+
+# To be compatible with safari typeof a regexp yields 'function';
+# in firefox it yields 'object'.
+js1_2/function/regexparg-1: FAIL_OK
 
 
 # Date trouble?
@@ -320,10 +326,6 @@ js1_5/Regress/regress-179524: FAIL_OK
 js1_5/Regress/regress-172699: FAIL_OK
 
 
-# Calls regexp objects with function call syntax; non-ECMA behavior.
-js1_2/Objects/toString-001: FAIL_OK
-
-
 # Assumes that the prototype of a function is enumerable. Non-ECMA,
 # see section 15.3.3.1, page 86.
 ecma/GlobalObject/15.1.2.2-1: FAIL_OK
@@ -337,6 +339,7 @@ ecma/GlobalObject/15.1.2.7: FAIL_OK
 # Tests that rely on specific details of function decompilation or
 # print strings for errors. Non-ECMA behavior.
 js1_2/function/tostring-2: FAIL_OK
+js1_2/Objects/toString-001: FAIL_OK
 js1_5/Exceptions/regress-332472: FAIL_OK
 js1_5/Regress/regress-173067: FAIL_OK
 js1_5/Regress/regress-355556: FAIL_OK
@@ -475,12 +478,11 @@ js1_2/Array/array_split_1: FAIL_OK
 js1_5/Array/regress-313153: FAIL_OK
 
 
-# Properties stack, fileName, and lineNumber of Error instances are
+# Properties fileName, and lineNumber of Error instances are
 # not supported. Mozilla specific extension.
 js1_5/Exceptions/errstack-001: FAIL_OK
 js1_5/Exceptions/regress-257751: FAIL_OK
 js1_5/Regress/regress-119719: FAIL_OK
-js1_5/Regress/regress-139316: FAIL_OK
 js1_5/Regress/regress-167328: FAIL_OK
 js1_5/Regress/regress-243869: FAIL_OK
 
@@ -561,22 +563,10 @@ js1_5/Array/regress-350256-02: FAIL
 ecma_3/Function/regress-137181: FAIL
 
 
-# Calls regexp objects with function call syntax; non-ECMA behavior.
-ecma_2/RegExp/regress-001: FAIL
-js1_2/regexp/regress-6359: FAIL
-js1_2/regexp/regress-9141: FAIL
-js1_5/Regress/regress-224956: FAIL
-js1_5/Regress/regress-325925: FAIL
-js1_2/regexp/simple_form: FAIL
-
-
 # Tests that rely on specific details of function decompilation or
 # print strings for errors. Non-ECMA behavior.
 js1_4/Regress/function-003: FAIL
 
-
-# Relies on JavaScript 1.2 / 1.3 deprecated features.
-js1_2/function/regexparg-1: FAIL
 
 # 'export' and 'import' are not keywords in V8.
 ecma_2/Exceptions/lexical-010: FAIL
@@ -594,7 +584,7 @@ js1_5/Regress/regress-306633: FAIL
 
 # This test seems designed to fail (it produces a 700Mbyte string).
 # We fail on out of memory.  The important thing is not to crash.
-js1_5/Regress/regress-303213: FAIL
+js1_5/Regress/regress-303213: FAIL || TIMEOUT if $mode == debug
 
 
 # Bug 1202592: New ecma_3/String/15.5.4.11 is failing.
@@ -630,17 +620,14 @@ js1_5/extensions/regress-313803: FAIL_OK
 js1_5/extensions/regress-314874: FAIL_OK
 js1_5/extensions/regress-322957: FAIL_OK
 js1_5/extensions/regress-328556: FAIL_OK
-js1_5/extensions/regress-330569: FAIL_OK
 js1_5/extensions/regress-333541: FAIL_OK
 js1_5/extensions/regress-335700: FAIL_OK
 js1_5/extensions/regress-336409-1: FAIL_OK
 js1_5/extensions/regress-336409-2: FAIL_OK
-js1_5/extensions/regress-336410-1: FAIL_OK
 js1_5/extensions/regress-336410-2: FAIL_OK
 js1_5/extensions/regress-341956-01: FAIL_OK
 js1_5/extensions/regress-341956-02: FAIL_OK
 js1_5/extensions/regress-341956-03: FAIL_OK
-js1_5/extensions/regress-342960: FAIL_OK
 js1_5/extensions/regress-345967: FAIL_OK
 js1_5/extensions/regress-346494-01: FAIL_OK
 js1_5/extensions/regress-346494: FAIL_OK
@@ -653,7 +640,6 @@ js1_5/extensions/regress-350531: FAIL_OK
 js1_5/extensions/regress-351102-01: FAIL_OK
 js1_5/extensions/regress-351102-02: FAIL_OK
 js1_5/extensions/regress-351102-06: FAIL_OK
-js1_5/extensions/regress-351448: FAIL_OK
 js1_5/extensions/regress-351973: FAIL_OK
 js1_5/extensions/regress-352060: FAIL_OK
 js1_5/extensions/regress-352094: FAIL_OK
@@ -716,6 +702,15 @@ js1_5/extensions/scope-001: FAIL_OK
 js1_5/extensions/toLocaleFormat-01: FAIL_OK
 js1_5/extensions/toLocaleFormat-02: FAIL_OK
 
+js1_5/extensions/regress-330569: TIMEOUT
+js1_5/extensions/regress-351448: TIMEOUT
+js1_5/extensions/regress-342960: FAIL_OK || TIMEOUT if $mode == debug
+# In the 64-bit version, this test takes longer to run out of memory
+# than it does in the 32-bit version when attempting to generate a huge
+# error message in debug mode.
+js1_5/extensions/regress-336410-1: FAIL_OK || TIMEOUT if ($mode == debug && $arch == x64)
+
+
 
 ##################### DECOMPILATION TESTS #####################
 
@@ -776,13 +771,11 @@ js1_5/decompilation/regress-383721: PASS || FAIL
 js1_5/decompilation/regress-406555: PASS || FAIL
 
 
-[ $FAST == yes ]
-
 # These tests take an unreasonable amount of time so we skip them
 # in fast mode.
 
-js1_5/Regress/regress-312588: SKIP
-js1_5/Regress/regress-271716-n: SKIP
+js1_5/Regress/regress-312588: TIMEOUT || SKIP if $FAST == yes
+js1_5/Regress/regress-271716-n: PASS || SKIP if $FAST == yes
 
 
 [ $FAST == yes && $ARCH == arm ]

@@ -28,108 +28,117 @@
 #ifndef V8_HEAP_H_
 #define V8_HEAP_H_
 
-namespace v8 { namespace internal {
+#include "zone-inl.h"
+
+namespace v8 {
+namespace internal {
 
 // Defines all the roots in Heap.
-#define STRONG_ROOT_LIST(V)                             \
-  V(Map, meta_map)                                      \
-  V(Map, heap_number_map)                               \
-  V(Map, short_string_map)                              \
-  V(Map, medium_string_map)                             \
-  V(Map, long_string_map)                               \
-  V(Map, short_ascii_string_map)                        \
-  V(Map, medium_ascii_string_map)                       \
-  V(Map, long_ascii_string_map)                         \
-  V(Map, short_symbol_map)                              \
-  V(Map, medium_symbol_map)                             \
-  V(Map, long_symbol_map)                               \
-  V(Map, short_ascii_symbol_map)                        \
-  V(Map, medium_ascii_symbol_map)                       \
-  V(Map, long_ascii_symbol_map)                         \
-  V(Map, short_cons_symbol_map)                         \
-  V(Map, medium_cons_symbol_map)                        \
-  V(Map, long_cons_symbol_map)                          \
-  V(Map, short_cons_ascii_symbol_map)                   \
-  V(Map, medium_cons_ascii_symbol_map)                  \
-  V(Map, long_cons_ascii_symbol_map)                    \
-  V(Map, short_sliced_symbol_map)                       \
-  V(Map, medium_sliced_symbol_map)                      \
-  V(Map, long_sliced_symbol_map)                        \
-  V(Map, short_sliced_ascii_symbol_map)                 \
-  V(Map, medium_sliced_ascii_symbol_map)                \
-  V(Map, long_sliced_ascii_symbol_map)                  \
-  V(Map, short_external_symbol_map)                     \
-  V(Map, medium_external_symbol_map)                    \
-  V(Map, long_external_symbol_map)                      \
-  V(Map, short_external_ascii_symbol_map)               \
-  V(Map, medium_external_ascii_symbol_map)              \
-  V(Map, long_external_ascii_symbol_map)                \
-  V(Map, short_cons_string_map)                         \
-  V(Map, medium_cons_string_map)                        \
-  V(Map, long_cons_string_map)                          \
-  V(Map, short_cons_ascii_string_map)                   \
-  V(Map, medium_cons_ascii_string_map)                  \
-  V(Map, long_cons_ascii_string_map)                    \
-  V(Map, short_sliced_string_map)                       \
-  V(Map, medium_sliced_string_map)                      \
-  V(Map, long_sliced_string_map)                        \
-  V(Map, short_sliced_ascii_string_map)                 \
-  V(Map, medium_sliced_ascii_string_map)                \
-  V(Map, long_sliced_ascii_string_map)                  \
-  V(Map, short_external_string_map)                     \
-  V(Map, medium_external_string_map)                    \
-  V(Map, long_external_string_map)                      \
-  V(Map, short_external_ascii_string_map)               \
-  V(Map, medium_external_ascii_string_map)              \
-  V(Map, long_external_ascii_string_map)                \
-  V(Map, undetectable_short_string_map)                 \
-  V(Map, undetectable_medium_string_map)                \
-  V(Map, undetectable_long_string_map)                  \
-  V(Map, undetectable_short_ascii_string_map)           \
-  V(Map, undetectable_medium_ascii_string_map)          \
-  V(Map, undetectable_long_ascii_string_map)            \
-  V(Map, byte_array_map)                                \
-  V(Map, fixed_array_map)                               \
-  V(Map, hash_table_map)                                \
-  V(Map, context_map)                                   \
-  V(Map, catch_context_map)                             \
-  V(Map, global_context_map)                            \
-  V(Map, code_map)                                      \
-  V(Map, oddball_map)                                   \
-  V(Map, boilerplate_function_map)                      \
-  V(Map, shared_function_info_map)                      \
-  V(Map, proxy_map)                                     \
-  V(Map, one_word_filler_map)                           \
-  V(Map, two_word_filler_map)                           \
-  V(Object, nan_value)                                  \
-  V(Object, undefined_value)                            \
-  V(Object, minus_zero_value)                           \
-  V(Object, null_value)                                 \
-  V(Object, true_value)                                 \
-  V(Object, false_value)                                \
-  V(String, empty_string)                               \
-  V(FixedArray, empty_fixed_array)                      \
-  V(DescriptorArray, empty_descriptor_array)            \
-  V(Object, the_hole_value)                             \
-  V(Map, neander_map)                                   \
-  V(JSObject, message_listeners)                        \
-  V(Proxy, prototype_accessors)                         \
-  V(Dictionary, code_stubs)                             \
-  V(Dictionary, non_monomorphic_cache)                  \
-  V(Code, js_entry_code)                                \
-  V(Code, js_construct_entry_code)                      \
-  V(Code, c_entry_code)                                 \
-  V(Code, c_entry_debug_break_code)                     \
-  V(FixedArray, number_string_cache)                    \
-  V(FixedArray, single_character_string_cache)          \
-  V(FixedArray, natives_source_cache)                   \
-  V(Object, keyed_lookup_cache)                         \
-  V(Object, last_script_id)
+#define STRONG_ROOT_LIST(V)                                                    \
+  V(Map, meta_map, MetaMap)                                                    \
+  V(Map, heap_number_map, HeapNumberMap)                                       \
+  V(Map, short_string_map, ShortStringMap)                                     \
+  V(Map, medium_string_map, MediumStringMap)                                   \
+  V(Map, long_string_map, LongStringMap)                                       \
+  V(Map, short_ascii_string_map, ShortAsciiStringMap)                          \
+  V(Map, medium_ascii_string_map, MediumAsciiStringMap)                        \
+  V(Map, long_ascii_string_map, LongAsciiStringMap)                            \
+  V(Map, short_symbol_map, ShortSymbolMap)                                     \
+  V(Map, medium_symbol_map, MediumSymbolMap)                                   \
+  V(Map, long_symbol_map, LongSymbolMap)                                       \
+  V(Map, short_ascii_symbol_map, ShortAsciiSymbolMap)                          \
+  V(Map, medium_ascii_symbol_map, MediumAsciiSymbolMap)                        \
+  V(Map, long_ascii_symbol_map, LongAsciiSymbolMap)                            \
+  V(Map, short_cons_symbol_map, ShortConsSymbolMap)                            \
+  V(Map, medium_cons_symbol_map, MediumConsSymbolMap)                          \
+  V(Map, long_cons_symbol_map, LongConsSymbolMap)                              \
+  V(Map, short_cons_ascii_symbol_map, ShortConsAsciiSymbolMap)                 \
+  V(Map, medium_cons_ascii_symbol_map, MediumConsAsciiSymbolMap)               \
+  V(Map, long_cons_ascii_symbol_map, LongConsAsciiSymbolMap)                   \
+  V(Map, short_sliced_symbol_map, ShortSlicedSymbolMap)                        \
+  V(Map, medium_sliced_symbol_map, MediumSlicedSymbolMap)                      \
+  V(Map, long_sliced_symbol_map, LongSlicedSymbolMap)                          \
+  V(Map, short_sliced_ascii_symbol_map, ShortSlicedAsciiSymbolMap)             \
+  V(Map, medium_sliced_ascii_symbol_map, MediumSlicedAsciiSymbolMap)           \
+  V(Map, long_sliced_ascii_symbol_map, LongSlicedAsciiSymbolMap)               \
+  V(Map, short_external_symbol_map, ShortExternalSymbolMap)                    \
+  V(Map, medium_external_symbol_map, MediumExternalSymbolMap)                  \
+  V(Map, long_external_symbol_map, LongExternalSymbolMap)                      \
+  V(Map, short_external_ascii_symbol_map, ShortExternalAsciiSymbolMap)         \
+  V(Map, medium_external_ascii_symbol_map, MediumExternalAsciiSymbolMap)       \
+  V(Map, long_external_ascii_symbol_map, LongExternalAsciiSymbolMap)           \
+  V(Map, short_cons_string_map, ShortConsStringMap)                            \
+  V(Map, medium_cons_string_map, MediumConsStringMap)                          \
+  V(Map, long_cons_string_map, LongConsStringMap)                              \
+  V(Map, short_cons_ascii_string_map, ShortConsAsciiStringMap)                 \
+  V(Map, medium_cons_ascii_string_map, MediumConsAsciiStringMap)               \
+  V(Map, long_cons_ascii_string_map, LongConsAsciiStringMap)                   \
+  V(Map, short_sliced_string_map, ShortSlicedStringMap)                        \
+  V(Map, medium_sliced_string_map, MediumSlicedStringMap)                      \
+  V(Map, long_sliced_string_map, LongSlicedStringMap)                          \
+  V(Map, short_sliced_ascii_string_map, ShortSlicedAsciiStringMap)             \
+  V(Map, medium_sliced_ascii_string_map, MediumSlicedAsciiStringMap)           \
+  V(Map, long_sliced_ascii_string_map, LongSlicedAsciiStringMap)               \
+  V(Map, short_external_string_map, ShortExternalStringMap)                    \
+  V(Map, medium_external_string_map, MediumExternalStringMap)                  \
+  V(Map, long_external_string_map, LongExternalStringMap)                      \
+  V(Map, short_external_ascii_string_map, ShortExternalAsciiStringMap)         \
+  V(Map, medium_external_ascii_string_map, MediumExternalAsciiStringMap)       \
+  V(Map, long_external_ascii_string_map, LongExternalAsciiStringMap)           \
+  V(Map, undetectable_short_string_map, UndetectableShortStringMap)            \
+  V(Map, undetectable_medium_string_map, UndetectableMediumStringMap)          \
+  V(Map, undetectable_long_string_map, UndetectableLongStringMap)              \
+  V(Map, undetectable_short_ascii_string_map, UndetectableShortAsciiStringMap) \
+  V(Map,                                                                       \
+    undetectable_medium_ascii_string_map,                                      \
+    UndetectableMediumAsciiStringMap)                                          \
+  V(Map, undetectable_long_ascii_string_map, UndetectableLongAsciiStringMap)   \
+  V(Map, byte_array_map, ByteArrayMap)                                         \
+  V(Map, pixel_array_map, PixelArrayMap)                                       \
+  V(Map, fixed_array_map, FixedArrayMap)                                       \
+  V(Map, hash_table_map, HashTableMap)                                         \
+  V(Map, context_map, ContextMap)                                              \
+  V(Map, catch_context_map, CatchContextMap)                                   \
+  V(Map, global_context_map, GlobalContextMap)                                 \
+  V(Map, code_map, CodeMap)                                                    \
+  V(Map, oddball_map, OddballMap)                                              \
+  V(Map, global_property_cell_map, GlobalPropertyCellMap)                      \
+  V(Map, boilerplate_function_map, BoilerplateFunctionMap)                     \
+  V(Map, shared_function_info_map, SharedFunctionInfoMap)                      \
+  V(Map, proxy_map, ProxyMap)                                                  \
+  V(Map, one_pointer_filler_map, OnePointerFillerMap)                          \
+  V(Map, two_pointer_filler_map, TwoPointerFillerMap)                          \
+  V(Object, nan_value, NanValue)                                               \
+  V(Object, undefined_value, UndefinedValue)                                   \
+  V(Object, no_interceptor_result_sentinel, NoInterceptorResultSentinel)       \
+  V(Object, termination_exception, TerminationException)                       \
+  V(Object, minus_zero_value, MinusZeroValue)                                  \
+  V(Object, null_value, NullValue)                                             \
+  V(Object, true_value, TrueValue)                                             \
+  V(Object, false_value, FalseValue)                                           \
+  V(String, empty_string, EmptyString)                                         \
+  V(FixedArray, empty_fixed_array, EmptyFixedArray)                            \
+  V(DescriptorArray, empty_descriptor_array, EmptyDescriptorArray)             \
+  V(Object, the_hole_value, TheHoleValue)                                      \
+  V(Map, neander_map, NeanderMap)                                              \
+  V(JSObject, message_listeners, MessageListeners)                             \
+  V(Proxy, prototype_accessors, PrototypeAccessors)                            \
+  V(NumberDictionary, code_stubs, CodeStubs)                                   \
+  V(NumberDictionary, non_monomorphic_cache, NonMonomorphicCache)              \
+  V(Code, js_entry_code, JsEntryCode)                                          \
+  V(Code, js_construct_entry_code, JsConstructEntryCode)                       \
+  V(Code, c_entry_code, CEntryCode)                                            \
+  V(Code, c_entry_debug_break_code, CEntryDebugBreakCode)                      \
+  V(FixedArray, number_string_cache, NumberStringCache)                        \
+  V(FixedArray, single_character_string_cache, SingleCharacterStringCache)     \
+  V(FixedArray, natives_source_cache, NativesSourceCache)                      \
+  V(Object, last_script_id, LastScriptId)                                      \
+  V(Smi, stack_limit, StackLimit)
 
 
 #define ROOT_LIST(V)                                  \
   STRONG_ROOT_LIST(V)                                 \
-  V(Object, symbol_table)
+  V(SymbolTable, symbol_table, SymbolTable)
 
 #define SYMBOL_LIST(V)                                                   \
   V(Array_symbol, "Array")                                               \
@@ -219,6 +228,11 @@ class Heap : public AllStatic {
   // Destroys all memory allocated by the heap.
   static void TearDown();
 
+  // Sets the stack limit in the roots_ array.  Some architectures generate code
+  // that looks here, because it is faster than loading from the static jslimit_
+  // variable.
+  static void SetStackLimit(intptr_t limit);
+
   // Returns whether Setup has been called.
   static bool HasBeenSetup();
 
@@ -240,9 +254,8 @@ class Heap : public AllStatic {
   // all available bytes. Check MaxHeapObjectSize() instead.
   static int Available();
 
-  // Returns the maximum object size that heap supports. Objects larger than
-  // the maximum heap object size are allocated in a large object space.
-  static inline int MaxHeapObjectSize();
+  // Returns the maximum object size in paged space.
+  static inline int MaxObjectSizeInPagedSpace();
 
   // Returns of size of all objects residing in the heap.
   static int SizeOfObjects();
@@ -251,7 +264,7 @@ class Heap : public AllStatic {
   // address with the mask will result in the start address of the new space
   // for all addresses in either semispace.
   static Address NewSpaceStart() { return new_space_.start(); }
-  static uint32_t NewSpaceMask() { return new_space_.mask(); }
+  static uintptr_t NewSpaceMask() { return new_space_.mask(); }
   static Address NewSpaceTop() { return new_space_.top(); }
 
   static NewSpace* new_space() { return &new_space_; }
@@ -259,6 +272,7 @@ class Heap : public AllStatic {
   static OldSpace* old_data_space() { return old_data_space_; }
   static OldSpace* code_space() { return code_space_; }
   static MapSpace* map_space() { return map_space_; }
+  static CellSpace* cell_space() { return cell_space_; }
   static LargeObjectSpace* lo_space() { return lo_space_; }
 
   static bool always_allocate() { return always_allocate_scope_depth_ != 0; }
@@ -273,6 +287,9 @@ class Heap : public AllStatic {
     return new_space_.allocation_limit_address();
   }
 
+  // Uncommit unused semi space.
+  static bool UncommitFromSpace() { return new_space_.UncommitFromSpace(); }
+
 #ifdef ENABLE_HEAP_PROTECTION
   // Protect/unprotect the heap by marking all spaces read-only/writable.
   static void Protect();
@@ -286,6 +303,12 @@ class Heap : public AllStatic {
   // Please note this does not perform a garbage collection.
   static Object* AllocateJSObject(JSFunction* constructor,
                                   PretenureFlag pretenure = NOT_TENURED);
+
+  // Allocates and initializes a new global object based on a constructor.
+  // Returns Failure::RetryAfterGC(requested_bytes, space) if the allocation
+  // failed.
+  // Please note this does not perform a garbage collection.
+  static Object* AllocateGlobalObject(JSFunction* constructor);
 
   // Returns a deep copy of the JavaScript object.
   // Properties and elements are copied too.
@@ -407,6 +430,20 @@ class Heap : public AllStatic {
   // Please note this does not perform a garbage collection.
   static Object* AllocateByteArray(int length);
 
+  // Allocate a pixel array of the specified length
+  // Returns Failure::RetryAfterGC(requested_bytes, space) if the allocation
+  // failed.
+  // Please note this does not perform a garbage collection.
+  static Object* AllocatePixelArray(int length,
+                                    uint8_t* external_pointer,
+                                    PretenureFlag pretenure);
+
+  // Allocate a tenured JS global property cell.
+  // Returns Failure::RetryAfterGC(requested_bytes, space) if the allocation
+  // failed.
+  // Please note this does not perform a garbage collection.
+  static Object* AllocateJSGlobalPropertyCell(Object* value);
+
   // Allocates a fixed array initialized with undefined values
   // Returns Failure::RetryAfterGC(requested_bytes, space) if the allocation
   // failed.
@@ -442,17 +479,6 @@ class Heap : public AllStatic {
 
   // Allocates a new utility object in the old generation.
   static Object* AllocateStruct(InstanceType type);
-
-
-  // Initializes a function with a shared part and prototype.
-  // Returns the function.
-  // Note: this code was factored out of AllocateFunction such that
-  // other parts of the VM could use it. Specifically, a function that creates
-  // instances of type JS_FUNCTION_TYPE benefit from the use of this function.
-  // Please note this does not perform a garbage collection.
-  static Object* InitializeFunction(JSFunction* function,
-                                    SharedFunctionInfo* shared,
-                                    Object* prototype);
 
   // Allocates a function initialized with a shared part.
   // Returns Failure::RetryAfterGC(requested_bytes, space) if the allocation
@@ -517,8 +543,7 @@ class Heap : public AllStatic {
   // Returns Failure::RetryAfterGC(requested_bytes, space) if the allocation
   // failed.
   // Please note this does not perform a garbage collection.
-  static Object* AllocateConsString(String* first,
-                                    String* second);
+  static Object* AllocateConsString(String* first, String* second);
 
   // Allocates a new sliced string object which is a slice of an underlying
   // string buffer stretching from the index start (inclusive) to the index
@@ -570,7 +595,7 @@ class Heap : public AllStatic {
   // object by containing this pointer.
   // Please note this function does not perform a garbage collection.
   static Object* CreateCode(const CodeDesc& desc,
-                            ScopeInfo<>* sinfo,
+                            ZoneScopeInfo* sinfo,
                             Code::Flags flags,
                             Handle<Object> self_reference);
 
@@ -608,8 +633,9 @@ class Heap : public AllStatic {
   // Returns whether required_space bytes are available after the collection.
   static bool CollectGarbage(int required_space, AllocationSpace space);
 
-  // Performs a full garbage collection.
-  static void CollectAllGarbage();
+  // Performs a full garbage collection. Force compaction if the
+  // parameter is true.
+  static void CollectAllGarbage(bool force_compaction);
 
   // Performs a full garbage collection if a context has been disposed
   // since the last time the check was performed.
@@ -634,18 +660,29 @@ class Heap : public AllStatic {
     global_gc_epilogue_callback_ = callback;
   }
 
-  // Heap roots
-#define ROOT_ACCESSOR(type, name) static type* name() { return name##_; }
+  // Heap root getters.  We have versions with and without type::cast() here.
+  // You can't use type::cast during GC because the assert fails.
+#define ROOT_ACCESSOR(type, name, camel_name)                                  \
+  static inline type* name() {                                                 \
+    return type::cast(roots_[k##camel_name##RootIndex]);                       \
+  }                                                                            \
+  static inline type* raw_unchecked_##name() {                                 \
+    return reinterpret_cast<type*>(roots_[k##camel_name##RootIndex]);          \
+  }
   ROOT_LIST(ROOT_ACCESSOR)
 #undef ROOT_ACCESSOR
 
 // Utility type maps
-#define STRUCT_MAP_ACCESSOR(NAME, Name, name) \
-    static Map* name##_map() { return name##_map_; }
+#define STRUCT_MAP_ACCESSOR(NAME, Name, name)                                  \
+    static inline Map* name##_map() {                                          \
+      return Map::cast(roots_[k##Name##MapRootIndex]);                         \
+    }
   STRUCT_LIST(STRUCT_MAP_ACCESSOR)
 #undef STRUCT_MAP_ACCESSOR
 
-#define SYMBOL_ACCESSOR(name, str) static String* name() { return name##_; }
+#define SYMBOL_ACCESSOR(name, str) static inline String* name() {              \
+    return String::cast(roots_[k##name##RootIndex]);                           \
+  }
   SYMBOL_LIST(SYMBOL_ACCESSOR)
 #undef SYMBOL_ACCESSOR
 
@@ -664,10 +701,11 @@ class Heap : public AllStatic {
   // Iterates a range of remembered set addresses starting with rset_start
   // corresponding to the range of allocated pointers
   // [object_start, object_end).
-  static void IterateRSetRange(Address object_start,
-                               Address object_end,
-                               Address rset_start,
-                               ObjectSlotCallback copy_object_func);
+  // Returns the number of bits that were set.
+  static int IterateRSetRange(Address object_start,
+                              Address object_end,
+                              Address rset_start,
+                              ObjectSlotCallback copy_object_func);
 
   // Returns whether the object resides in new space.
   static inline bool InNewSpace(Object* object);
@@ -689,20 +727,20 @@ class Heap : public AllStatic {
   static inline AllocationSpace TargetSpaceId(InstanceType type);
 
   // Sets the stub_cache_ (only used when expanding the dictionary).
-  static void set_code_stubs(Dictionary* value) { code_stubs_ = value; }
-
-  // Sets the non_monomorphic_cache_ (only used when expanding the dictionary).
-  static void set_non_monomorphic_cache(Dictionary* value) {
-    non_monomorphic_cache_ = value;
+  static void public_set_code_stubs(NumberDictionary* value) {
+    roots_[kCodeStubsRootIndex] = value;
   }
 
-  // Gets, sets and clears the lookup cache used for keyed access.
-  static inline Object* GetKeyedLookupCache();
-  static inline void SetKeyedLookupCache(LookupCache* cache);
-  static inline void ClearKeyedLookupCache();
+  // Sets the non_monomorphic_cache_ (only used when expanding the dictionary).
+  static void public_set_non_monomorphic_cache(NumberDictionary* value) {
+    roots_[kNonMonomorphicCacheRootIndex] = value;
+  }
 
   // Update the next script id.
   static inline void SetLastScriptId(Object* last_script_id);
+
+  // Generated code can embed this address to get access to the roots.
+  static Object** roots_address() { return roots_; }
 
 #ifdef DEBUG
   static void Print();
@@ -719,6 +757,11 @@ class Heap : public AllStatic {
   static void ZapFromSpace();
 #endif
 
+#if defined(ENABLE_LOGGING_AND_PROFILING)
+  // Print short heap statistics.
+  static void PrintShortHeapStatistics();
+#endif
+
   // Makes a new symbol object
   // Returns Failure::RetryAfterGC(requested_bytes, space) if the allocation
   // failed.
@@ -727,7 +770,7 @@ class Heap : public AllStatic {
   static Object* CreateSymbol(String* str);
 
   // Write barrier support for address[offset] = o.
-  inline static void RecordWrite(Address address, int offset);
+  static inline void RecordWrite(Address address, int offset);
 
   // Given an address occupied by a live code object, return that object.
   static Object* FindCodeObject(Address a);
@@ -765,6 +808,9 @@ class Heap : public AllStatic {
   // Rebuild remembered set in old and map spaces.
   static void RebuildRSets();
 
+  // Commits from space if it is uncommitted.
+  static void EnsureFromSpaceIsCommitted();
+
   //
   // Support for the API.
   //
@@ -783,22 +829,7 @@ class Heap : public AllStatic {
 
   // Adjusts the amount of registered external memory.
   // Returns the adjusted value.
-  static int AdjustAmountOfExternalAllocatedMemory(int change_in_bytes) {
-    int amount = amount_of_external_allocated_memory_ + change_in_bytes;
-    if (change_in_bytes >= 0) {
-      // Avoid overflow.
-      if (amount > amount_of_external_allocated_memory_) {
-        amount_of_external_allocated_memory_ = amount;
-      }
-    } else {
-      // Avoid underflow.
-      if (amount >= 0) {
-        amount_of_external_allocated_memory_ = amount;
-      }
-    }
-    ASSERT(amount_of_external_allocated_memory_ >= 0);
-    return amount_of_external_allocated_memory_;
-  }
+  static inline int AdjustAmountOfExternalAllocatedMemory(int change_in_bytes);
 
   // Allocate unitialized fixed array (pretenure == NON_TENURE).
   static Object* AllocateRawFixedArray(int length);
@@ -817,25 +848,56 @@ class Heap : public AllStatic {
            > old_gen_allocation_limit_;
   }
 
+  // Can be called when the embedding application is idle.
+  static bool IdleNotification();
+
+  // Declare all the root indices.
+  enum RootListIndex {
+#define ROOT_INDEX_DECLARATION(type, name, camel_name) k##camel_name##RootIndex,
+    STRONG_ROOT_LIST(ROOT_INDEX_DECLARATION)
+#undef ROOT_INDEX_DECLARATION
+
+// Utility type maps
+#define DECLARE_STRUCT_MAP(NAME, Name, name) k##Name##MapRootIndex,
+  STRUCT_LIST(DECLARE_STRUCT_MAP)
+#undef DECLARE_STRUCT_MAP
+
+#define SYMBOL_INDEX_DECLARATION(name, str) k##name##RootIndex,
+    SYMBOL_LIST(SYMBOL_INDEX_DECLARATION)
+#undef SYMBOL_DECLARATION
+
+    kSymbolTableRootIndex,
+    kStrongRootListLength = kSymbolTableRootIndex,
+    kRootListLength
+  };
+
  private:
   static int semispace_size_;
   static int initial_semispace_size_;
   static int young_generation_size_;
   static int old_generation_size_;
 
-  static int new_space_growth_limit_;
-  static int scavenge_count_;
+  // For keeping track of how much data has survived
+  // scavenge since last new space expansion.
+  static int survived_since_last_expansion_;
 
   static int always_allocate_scope_depth_;
   static bool context_disposed_pending_;
 
   static const int kMaxMapSpaceSize = 8*MB;
 
+#if defined(V8_TARGET_ARCH_X64)
+  static const int kMaxObjectSizeInNewSpace = 512*KB;
+#else
+  static const int kMaxObjectSizeInNewSpace = 256*KB;
+#endif
+
   static NewSpace new_space_;
   static OldSpace* old_pointer_space_;
   static OldSpace* old_data_space_;
   static OldSpace* code_space_;
   static MapSpace* map_space_;
+  static CellSpace* cell_space_;
   static LargeObjectSpace* lo_space_;
   static HeapState gc_state_;
 
@@ -847,6 +909,13 @@ class Heap : public AllStatic {
 
   static int mc_count_;  // how many mark-compact collections happened
   static int gc_count_;  // how many gc happened
+
+#define ROOT_ACCESSOR(type, name, camel_name)                                  \
+  static inline void set_##name(type* value) {                                 \
+    roots_[k##camel_name##RootIndex] = value;                                  \
+  }
+  ROOT_LIST(ROOT_ACCESSOR)
+#undef ROOT_ACCESSOR
 
 #ifdef DEBUG
   static bool allocation_allowed_;
@@ -871,6 +940,10 @@ class Heap : public AllStatic {
   // every allocation in large object space.
   static int old_gen_allocation_limit_;
 
+  // Limit on the amount of externally allocated memory allowed
+  // between global GCs. If reached a global GC is forced.
+  static int external_allocation_limit_;
+
   // The amount of external memory registered through the API kept alive
   // by global handles
   static int amount_of_external_allocated_memory_;
@@ -882,19 +955,28 @@ class Heap : public AllStatic {
   // last GC.
   static int old_gen_exhausted_;
 
-  // Declare all the roots
-#define ROOT_DECLARATION(type, name) static type* name##_;
-  ROOT_LIST(ROOT_DECLARATION)
-#undef ROOT_DECLARATION
+  static Object* roots_[kRootListLength];
 
-// Utility type maps
-#define DECLARE_STRUCT_MAP(NAME, Name, name) static Map* name##_map_;
-  STRUCT_LIST(DECLARE_STRUCT_MAP)
-#undef DECLARE_STRUCT_MAP
+  struct StringTypeTable {
+    InstanceType type;
+    int size;
+    RootListIndex index;
+  };
 
-#define SYMBOL_DECLARATION(name, str) static String* name##_;
-  SYMBOL_LIST(SYMBOL_DECLARATION)
-#undef SYMBOL_DECLARATION
+  struct ConstantSymbolTable {
+    const char* contents;
+    RootListIndex index;
+  };
+
+  struct StructTable {
+    InstanceType type;
+    int size;
+    RootListIndex index;
+  };
+
+  static const StringTypeTable string_type_table[];
+  static const ConstantSymbolTable constant_symbol_table[];
+  static const StructTable struct_table[];
 
   // The special hidden symbol which is an empty string, but does not match
   // any string when looked up in properties.
@@ -923,7 +1005,10 @@ class Heap : public AllStatic {
   // to Heap::AllocateRaw(size_in_bytes, MAP_SPACE), except that (a) it doesn't
   // have to test the allocation space argument and (b) can reduce code size
   // (since both AllocateRaw and AllocateRawMap are inlined).
-  static inline Object* AllocateRawMap(int size_in_bytes);
+  static inline Object* AllocateRawMap();
+
+  // Allocate an uninitialized object in the global property cell space.
+  static inline Object* AllocateRawCell();
 
   // Initializes a JSObject based on its map.
   static void InitializeJSObjectFromMap(JSObject* obj,
@@ -932,7 +1017,15 @@ class Heap : public AllStatic {
 
   static bool CreateInitialMaps();
   static bool CreateInitialObjects();
+
+  // These four Create*EntryStub functions are here because of a gcc-4.4 bug
+  // that assigns wrong vtable entries.
+  static void CreateCEntryStub();
+  static void CreateCEntryDebugBreakStub();
+  static void CreateJSEntryStub();
+  static void CreateJSConstructEntryStub();
   static void CreateFixedStubs();
+
   static Object* CreateOddball(Map* map,
                                const char* to_string,
                                Object* to_number);
@@ -984,7 +1077,17 @@ class Heap : public AllStatic {
   static void ScavengeObjectSlow(HeapObject** p, HeapObject* object);
 
   // Copy memory from src to dst.
-  inline static void CopyBlock(Object** dst, Object** src, int byte_size);
+  static inline void CopyBlock(Object** dst, Object** src, int byte_size);
+
+  // Initializes a function with a shared part and prototype.
+  // Returns the function.
+  // Note: this code was factored out of AllocateFunction such that
+  // other parts of the VM could use it. Specifically, a function that creates
+  // instances of type JS_FUNCTION_TYPE benefit from the use of this function.
+  // Please note this does not perform a garbage collection.
+  static inline Object* InitializeFunction(JSFunction* function,
+                                           SharedFunctionInfo* shared,
+                                           Object* prototype);
 
   static const int kInitialSymbolTableSize = 2048;
   static const int kInitialEvalCacheSize = 64;
@@ -1135,6 +1238,84 @@ class HeapIterator BASE_EMBEDDED {
 };
 
 
+// Cache for mapping (map, property name) into field offset.
+// Cleared at startup and prior to mark sweep collection.
+class KeyedLookupCache {
+ public:
+  // Lookup field offset for (map, name). If absent, -1 is returned.
+  static int Lookup(Map* map, String* name);
+
+  // Update an element in the cache.
+  static void Update(Map* map, String* name, int field_offset);
+
+  // Clear the cache.
+  static void Clear();
+ private:
+  static inline int Hash(Map* map, String* name);
+  static const int kLength = 64;
+  struct Key {
+    Map* map;
+    String* name;
+  };
+  static Key keys_[kLength];
+  static int field_offsets_[kLength];
+};
+
+
+
+// Cache for mapping (array, property name) into descriptor index.
+// The cache contains both positive and negative results.
+// Descriptor index equals kNotFound means the property is absent.
+// Cleared at startup and prior to any gc.
+class DescriptorLookupCache {
+ public:
+  // Lookup descriptor index for (map, name).
+  // If absent, kAbsent is returned.
+  static int Lookup(DescriptorArray* array, String* name) {
+    if (!StringShape(name).IsSymbol()) return kAbsent;
+    int index = Hash(array, name);
+    Key& key = keys_[index];
+    if ((key.array == array) && (key.name == name)) return results_[index];
+    return kAbsent;
+  }
+
+  // Update an element in the cache.
+  static void Update(DescriptorArray* array, String* name, int result) {
+    ASSERT(result != kAbsent);
+    if (StringShape(name).IsSymbol()) {
+      int index = Hash(array, name);
+      Key& key = keys_[index];
+      key.array = array;
+      key.name = name;
+      results_[index] = result;
+    }
+  }
+
+  // Clear the cache.
+  static void Clear();
+
+  static const int kAbsent = -2;
+ private:
+  static int Hash(DescriptorArray* array, String* name) {
+    // Uses only lower 32 bits if pointers are larger.
+    uintptr_t array_hash =
+        static_cast<uint32_t>(reinterpret_cast<uintptr_t>(array)) >> 2;
+    uintptr_t name_hash =
+        static_cast<uint32_t>(reinterpret_cast<uintptr_t>(name)) >> 2;
+    return (array_hash ^ name_hash) % kLength;
+  }
+
+  static const int kLength = 64;
+  struct Key {
+    DescriptorArray* array;
+    String* name;
+  };
+
+  static Key keys_[kLength];
+  static int results_[kLength];
+};
+
+
 // ----------------------------------------------------------------------------
 // Marking stack for tracing live objects.
 
@@ -1219,12 +1400,32 @@ class AssertNoAllocation {
   bool old_state_;
 };
 
+class DisableAssertNoAllocation {
+ public:
+  DisableAssertNoAllocation() {
+    old_state_ = Heap::allow_allocation(true);
+  }
+
+  ~DisableAssertNoAllocation() {
+    Heap::allow_allocation(old_state_);
+  }
+
+ private:
+  bool old_state_;
+};
+
 #else  // ndef DEBUG
 
 class AssertNoAllocation {
  public:
   AssertNoAllocation() { }
   ~AssertNoAllocation() { }
+};
+
+class DisableAssertNoAllocation {
+ public:
+  DisableAssertNoAllocation() { }
+  ~DisableAssertNoAllocation() { }
 };
 
 #endif

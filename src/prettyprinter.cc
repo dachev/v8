@@ -33,7 +33,8 @@
 #include "scopes.h"
 #include "platform.h"
 
-namespace v8 { namespace internal {
+namespace v8 {
+namespace internal {
 
 #ifdef DEBUG
 
@@ -416,7 +417,7 @@ void PrettyPrinter::VisitThisFunction(ThisFunction* node) {
 }
 
 
-const char* PrettyPrinter::Print(Node* node) {
+const char* PrettyPrinter::Print(AstNode* node) {
   Init();
   Visit(node);
   return output_;
@@ -440,7 +441,7 @@ const char* PrettyPrinter::PrintProgram(FunctionLiteral* program) {
 }
 
 
-void PrettyPrinter::PrintOut(Node* node) {
+void PrettyPrinter::PrintOut(AstNode* node) {
   PrettyPrinter printer;
   PrintF("%s", printer.Print(node));
 }
@@ -646,7 +647,7 @@ AstPrinter::~AstPrinter() {
 
 void AstPrinter::PrintIndented(const char* txt) {
   for (int i = 0; i < indent_; i++) {
-    Print(".   ");
+    Print(". ");
   }
   Print(txt);
 }
@@ -692,14 +693,14 @@ void AstPrinter::PrintLabelsIndented(const char* info, ZoneStringList* labels) {
       Print(" ");
     }
     PrintLabels(labels);
-    Print("\n");
   } else if (info != NULL) {
     PrintIndented(info);
   }
+  Print("\n");
 }
 
 
-void AstPrinter::PrintIndentedVisit(const char* s, Node* node) {
+void AstPrinter::PrintIndentedVisit(const char* s, AstNode* node) {
   IndentedScope indent(s);
   Visit(node);
 }
@@ -709,6 +710,7 @@ const char* AstPrinter::PrintProgram(FunctionLiteral* program) {
   Init();
   { IndentedScope indent("FUNC");
     PrintLiteralIndented("NAME", program->name(), true);
+    PrintLiteralIndented("INFERRED NAME", program->inferred_name(), true);
     PrintParameters(program->scope());
     PrintDeclarations(program->scope()->declarations());
     PrintStatements(program->body());
@@ -731,7 +733,7 @@ void AstPrinter::PrintParameters(Scope* scope) {
   if (scope->num_parameters() > 0) {
     IndentedScope indent("PARAMS");
     for (int i = 0; i < scope->num_parameters(); i++) {
-      PrintLiteralWithModeIndented("VAR ", scope->parameter(i),
+      PrintLiteralWithModeIndented("VAR", scope->parameter(i),
                                    scope->parameter(i)->name(),
                                    scope->parameter(i)->type());
     }
@@ -885,6 +887,7 @@ void AstPrinter::VisitDebuggerStatement(DebuggerStatement* node) {
 void AstPrinter::VisitFunctionLiteral(FunctionLiteral* node) {
   IndentedScope indent("FUNC LITERAL");
   PrintLiteralIndented("NAME", node->name(), false);
+  PrintLiteralIndented("INFERRED NAME", node->inferred_name(), false);
   PrintParameters(node->scope());
   // We don't want to see the function literal in this case: it
   // will be printed via PrintProgram when the code for it is
@@ -915,9 +918,8 @@ void AstPrinter::VisitLiteral(Literal* node) {
 
 void AstPrinter::VisitRegExpLiteral(RegExpLiteral* node) {
   IndentedScope indent("REGEXP LITERAL");
-  PrintLiteral(node->pattern(), false);
-  Print(",");
-  PrintLiteral(node->flags(), false);
+  PrintLiteralIndented("PATTERN", node->pattern(), false);
+  PrintLiteralIndented("FLAGS", node->flags(), false);
 }
 
 
@@ -932,6 +934,9 @@ void AstPrinter::VisitObjectLiteral(ObjectLiteral* node) {
       case ObjectLiteral::Property::COMPUTED:
         prop_kind = "PROPERTY - COMPUTED";
         break;
+      case ObjectLiteral::Property::MATERIALIZED_LITERAL:
+        prop_kind = "PROPERTY - MATERIALIZED_LITERAL";
+        break;
       case ObjectLiteral::Property::PROTOTYPE:
         prop_kind = "PROPERTY - PROTOTYPE";
         break;
@@ -943,7 +948,6 @@ void AstPrinter::VisitObjectLiteral(ObjectLiteral* node) {
         break;
       default:
         UNREACHABLE();
-        break;
     }
     IndentedScope prop(prop_kind);
     PrintIndentedVisit("KEY", node->properties()->at(i)->key());
@@ -1022,7 +1026,7 @@ void AstPrinter::VisitProperty(Property* node) {
   Visit(node->obj());
   Literal* literal = node->key()->AsLiteral();
   if (literal != NULL && literal->handle()->IsSymbol()) {
-    PrintLiteralIndented("LITERAL", literal->handle(), false);
+    PrintLiteralIndented("NAME", literal->handle(), false);
   } else {
     PrintIndentedVisit("KEY", node->key());
   }

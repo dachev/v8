@@ -32,7 +32,8 @@
 #include "macro-assembler.h"
 #include "jsregexp.h"
 
-namespace v8 { namespace internal {
+namespace v8 {
+namespace internal {
 
 #ifdef DEBUG
 
@@ -114,6 +115,9 @@ void HeapObject::HeapObjectPrint() {
     case BYTE_ARRAY_TYPE:
       ByteArray::cast(this)->ByteArrayPrint();
       break;
+    case PIXEL_ARRAY_TYPE:
+      PixelArray::cast(this)->PixelArrayPrint();
+      break;
     case FILLER_TYPE:
       PrintF("filler");
       break;
@@ -151,7 +155,9 @@ void HeapObject::HeapObjectPrint() {
     case SHARED_FUNCTION_INFO_TYPE:
       SharedFunctionInfo::cast(this)->SharedFunctionInfoPrint();
       break;
-
+    case JS_GLOBAL_PROPERTY_CELL_TYPE:
+      JSGlobalPropertyCell::cast(this)->JSGlobalPropertyCellPrint();
+      break;
 #define MAKE_STRUCT_CASE(NAME, Name, name) \
   case NAME##_TYPE:                        \
     Name::cast(this)->Name##Print();       \
@@ -188,6 +194,9 @@ void HeapObject::HeapObjectVerify() {
     case BYTE_ARRAY_TYPE:
       ByteArray::cast(this)->ByteArrayVerify();
       break;
+    case PIXEL_ARRAY_TYPE:
+      PixelArray::cast(this)->PixelArrayVerify();
+      break;
     case CODE_TYPE:
       Code::cast(this)->CodeVerify();
       break;
@@ -212,6 +221,9 @@ void HeapObject::HeapObjectVerify() {
       break;
     case JS_BUILTINS_OBJECT_TYPE:
       JSBuiltinsObject::cast(this)->JSBuiltinsObjectVerify();
+      break;
+    case JS_GLOBAL_PROPERTY_CELL_TYPE:
+      JSGlobalPropertyCell::cast(this)->JSGlobalPropertyCellVerify();
       break;
     case JS_ARRAY_TYPE:
       JSArray::cast(this)->JSArrayVerify();
@@ -258,36 +270,55 @@ void ByteArray::ByteArrayPrint() {
 }
 
 
+void PixelArray::PixelArrayPrint() {
+  PrintF("pixel array");
+}
+
+
 void ByteArray::ByteArrayVerify() {
   ASSERT(IsByteArray());
 }
 
 
+void PixelArray::PixelArrayVerify() {
+  ASSERT(IsPixelArray());
+}
+
+
 void JSObject::PrintProperties() {
   if (HasFastProperties()) {
-    for (DescriptorReader r(map()->instance_descriptors());
-         !r.eos();
-         r.advance()) {
+    DescriptorArray* descs = map()->instance_descriptors();
+    for (int i = 0; i < descs->number_of_descriptors(); i++) {
       PrintF("   ");
-      r.GetKey()->StringPrint();
+      descs->GetKey(i)->StringPrint();
       PrintF(": ");
-      if (r.type() == FIELD) {
-        FastPropertyAt(r.GetFieldIndex())->ShortPrint();
-        PrintF(" (field at offset %d)\n", r.GetFieldIndex());
-      } else if (r.type() ==  CONSTANT_FUNCTION) {
-        r.GetConstantFunction()->ShortPrint();
-        PrintF(" (constant function)\n");
-      } else if (r.type() == CALLBACKS) {
-        r.GetCallbacksObject()->ShortPrint();
-        PrintF(" (callback)\n");
-      } else if (r.type() == MAP_TRANSITION) {
-        PrintF(" (map transition)\n");
-      } else if (r.type() == CONSTANT_TRANSITION) {
-        PrintF(" (constant transition)\n");
-      } else if (r.type() == NULL_DESCRIPTOR) {
-        PrintF(" (null descriptor)\n");
-      } else {
-        UNREACHABLE();
+      switch (descs->GetType(i)) {
+        case FIELD: {
+          int index = descs->GetFieldIndex(i);
+          FastPropertyAt(index)->ShortPrint();
+          PrintF(" (field at offset %d)\n", index);
+          break;
+        }
+        case CONSTANT_FUNCTION:
+          descs->GetConstantFunction(i)->ShortPrint();
+          PrintF(" (constant function)\n");
+          break;
+        case CALLBACKS:
+          descs->GetCallbacksObject(i)->ShortPrint();
+          PrintF(" (callback)\n");
+          break;
+        case MAP_TRANSITION:
+          PrintF(" (map transition)\n");
+          break;
+        case CONSTANT_TRANSITION:
+          PrintF(" (constant transition)\n");
+          break;
+        case NULL_DESCRIPTOR:
+          PrintF(" (null descriptor)\n");
+          break;
+        default:
+          UNREACHABLE();
+          break;
       }
     }
   } else {
@@ -297,15 +328,30 @@ void JSObject::PrintProperties() {
 
 
 void JSObject::PrintElements() {
-  if (HasFastElements()) {
-    FixedArray* p = FixedArray::cast(elements());
-    for (int i = 0; i < p->length(); i++) {
-      PrintF("   %d: ", i);
-      p->get(i)->ShortPrint();
-      PrintF("\n");
+  switch (GetElementsKind()) {
+    case FAST_ELEMENTS: {
+      // Print in array notation for non-sparse arrays.
+      FixedArray* p = FixedArray::cast(elements());
+      for (int i = 0; i < p->length(); i++) {
+        PrintF("   %d: ", i);
+        p->get(i)->ShortPrint();
+        PrintF("\n");
+      }
+      break;
     }
-  } else {
-    elements()->Print();
+    case PIXEL_ELEMENTS: {
+      PixelArray* p = PixelArray::cast(elements());
+      for (int i = 0; i < p->length(); i++) {
+        PrintF("   %d: %d\n", i, p->get(i));
+      }
+      break;
+    }
+    case DICTIONARY_ELEMENTS:
+      elements()->Print();
+      break;
+    default:
+      UNREACHABLE();
+      break;
   }
 }
 
@@ -325,9 +371,9 @@ void JSObject::JSObjectVerify() {
   VerifyHeapPointer(properties());
   VerifyHeapPointer(elements());
   if (HasFastProperties()) {
-    CHECK(map()->unused_property_fields() ==
-          (map()->inobject_properties() + properties()->length() -
-           map()->NextFreePropertyIndex()));
+    CHECK_EQ(map()->unused_property_fields(),
+             (map()->inobject_properties() + properties()->length() -
+              map()->NextFreePropertyIndex()));
   }
 }
 
@@ -387,10 +433,12 @@ static const char* TypeToString(InstanceType type) {
     case LONG_EXTERNAL_STRING_TYPE: return "EXTERNAL_STRING";
     case FIXED_ARRAY_TYPE: return "FIXED_ARRAY";
     case BYTE_ARRAY_TYPE: return "BYTE_ARRAY";
+    case PIXEL_ARRAY_TYPE: return "PIXEL_ARRAY";
     case FILLER_TYPE: return "FILLER";
     case JS_OBJECT_TYPE: return "JS_OBJECT";
     case JS_CONTEXT_EXTENSION_OBJECT_TYPE: return "JS_CONTEXT_EXTENSION_OBJECT";
     case ODDBALL_TYPE: return "ODDBALL";
+    case JS_GLOBAL_PROPERTY_CELL_TYPE: return "JS_GLOBAL_PROPERTY_CELL";
     case SHARED_FUNCTION_INFO_TYPE: return "SHARED_FUNCTION_INFO";
     case JS_FUNCTION_TYPE: return "JS_FUNCTION";
     case CODE_TYPE: return "CODE";
@@ -414,6 +462,9 @@ void Map::MapPrint() {
   HeapObject::PrintHeader("Map");
   PrintF(" - type: %s\n", TypeToString(instance_type()));
   PrintF(" - instance size: %d\n", instance_size());
+  PrintF(" - inobject properties: %d\n", inobject_properties());
+  PrintF(" - pre-allocated property fields: %d\n",
+      pre_allocated_property_fields());
   PrintF(" - unused property fields: %d\n", unused_property_fields());
   if (is_hidden_prototype()) {
     PrintF(" - hidden_prototype\n");
@@ -426,6 +477,9 @@ void Map::MapPrint() {
   }
   if (is_undetectable()) {
     PrintF(" - undetectable\n");
+  }
+  if (needs_loading()) {
+    PrintF(" - needs_loading\n");
   }
   if (has_instance_call_handler()) {
     PrintF(" - instance_call_handler\n");
@@ -558,8 +612,6 @@ void SharedFunctionInfo::SharedFunctionInfoPrint() {
   code()->ShortPrint();
   PrintF("\n - source code = ");
   GetSourceCode()->ShortPrint();
-  PrintF("\n - lazy load: %s",
-         lazy_load_data() == Heap::undefined_value() ? "no" : "yes");
   // Script files are often large, hard to read.
   // PrintF("\n - script =");
   // script()->Print();
@@ -570,6 +622,12 @@ void SharedFunctionInfo::SharedFunctionInfoPrint() {
   PrintF("\n - debug info = ");
   debug_info()->ShortPrint();
   PrintF("\n - length = %d", length());
+  PrintF("\n - has_only_this_property_assignments = %d",
+         has_only_this_property_assignments());
+  PrintF("\n - has_only_simple_this_property_assignments = %d",
+         has_only_simple_this_property_assignments());
+  PrintF("\n - this_property_assignments = ");
+  this_property_assignments()->ShortPrint();
   PrintF("\n");
 }
 
@@ -579,7 +637,6 @@ void SharedFunctionInfo::SharedFunctionInfoVerify() {
   VerifyObjectField(kCodeOffset);
   VerifyObjectField(kInstanceClassNameOffset);
   VerifyObjectField(kExternalReferenceDataOffset);
-  VerifyObjectField(kLazyLoadDataOffset);
   VerifyObjectField(kScriptOffset);
   VerifyObjectField(kDebugInfoOffset);
 }
@@ -650,8 +707,20 @@ void Oddball::OddballVerify() {
   } else {
     ASSERT(number->IsSmi());
     int value = Smi::cast(number)->value();
-    ASSERT(value == 0 || value == 1 || value == -1);
+    ASSERT(value == 0 || value == 1 || value == -1 ||
+           value == -2 || value == -3);
   }
+}
+
+
+void JSGlobalPropertyCell::JSGlobalPropertyCellVerify() {
+  CHECK(IsJSGlobalPropertyCell());
+  VerifyObjectField(kValueOffset);
+}
+
+
+void JSGlobalPropertyCell::JSGlobalPropertyCellPrint() {
+  HeapObject::PrintHeader("JSGlobalPropertyCell");
 }
 
 
@@ -696,7 +765,7 @@ void JSRegExp::JSRegExpVerify() {
       break;
     }
     case JSRegExp::IRREGEXP: {
-      bool is_native = RegExpImpl::UseNativeRegexp();
+      bool is_native = RegExpImpl::UsesNativeRegExp();
 
       FixedArray* arr = FixedArray::cast(data());
       Object* ascii_data = arr->get(JSRegExp::kIrregexpASCIICodeIndex);
@@ -724,25 +793,6 @@ void Proxy::ProxyPrint() {
 
 void Proxy::ProxyVerify() {
   ASSERT(IsProxy());
-}
-
-
-void Dictionary::Print() {
-  int capacity = Capacity();
-  for (int i = 0; i < capacity; i++) {
-    Object* k = KeyAt(i);
-    if (IsKey(k)) {
-      PrintF(" ");
-      if (k->IsString()) {
-        String::cast(k)->StringPrint();
-      } else {
-        k->ShortPrint();
-      }
-      PrintF(": ");
-      ValueAt(i)->ShortPrint();
-      PrintF("\n");
-    }
-  }
 }
 
 
@@ -924,7 +974,11 @@ void Script::ScriptVerify() {
   VerifyPointer(name());
   line_offset()->SmiVerify();
   column_offset()->SmiVerify();
+  VerifyPointer(data());
+  VerifyPointer(wrapper());
   type()->SmiVerify();
+  VerifyPointer(line_ends());
+  VerifyPointer(id());
 }
 
 
@@ -940,10 +994,13 @@ void Script::ScriptPrint() {
   column_offset()->ShortPrint();
   PrintF("\n - type: ");
   type()->ShortPrint();
+  PrintF("\n - id: ");
+  id()->ShortPrint();
   PrintF("\n");
 }
 
 
+#ifdef ENABLE_DEBUGGER_SUPPORT
 void DebugInfo::DebugInfoVerify() {
   CHECK(IsDebugInfo());
   VerifyPointer(shared());
@@ -983,6 +1040,7 @@ void BreakPointInfo::BreakPointInfoPrint() {
   PrintF("\n - break_point_objects: ");
   break_point_objects()->ShortPrint();
 }
+#endif
 
 
 void JSObject::IncrementSpillStatistics(SpillInformation* info) {
@@ -993,27 +1051,41 @@ void JSObject::IncrementSpillStatistics(SpillInformation* info) {
     info->number_of_fast_used_fields_   += map()->NextFreePropertyIndex();
     info->number_of_fast_unused_fields_ += map()->unused_property_fields();
   } else {
-    Dictionary* dict = property_dictionary();
+    StringDictionary* dict = property_dictionary();
     info->number_of_slow_used_properties_ += dict->NumberOfElements();
     info->number_of_slow_unused_properties_ +=
         dict->Capacity() - dict->NumberOfElements();
   }
   // Indexed properties
-  if (HasFastElements()) {
-    info->number_of_objects_with_fast_elements_++;
-    int holes = 0;
-    FixedArray* e = FixedArray::cast(elements());
-    int len = e->length();
-    for (int i = 0; i < len; i++) {
-      if (e->get(i) == Heap::the_hole_value()) holes++;
+  switch (GetElementsKind()) {
+    case FAST_ELEMENTS: {
+      info->number_of_objects_with_fast_elements_++;
+      int holes = 0;
+      FixedArray* e = FixedArray::cast(elements());
+      int len = e->length();
+      for (int i = 0; i < len; i++) {
+        if (e->get(i) == Heap::the_hole_value()) holes++;
+      }
+      info->number_of_fast_used_elements_   += len - holes;
+      info->number_of_fast_unused_elements_ += holes;
+      break;
     }
-    info->number_of_fast_used_elements_   += len - holes;
-    info->number_of_fast_unused_elements_ += holes;
-  } else {
-    Dictionary* dict = element_dictionary();
-    info->number_of_slow_used_elements_ += dict->NumberOfElements();
-    info->number_of_slow_unused_elements_ +=
-        dict->Capacity() - dict->NumberOfElements();
+    case PIXEL_ELEMENTS: {
+      info->number_of_objects_with_fast_elements_++;
+      PixelArray* e = PixelArray::cast(elements());
+      info->number_of_fast_used_elements_ += e->length();
+      break;
+    }
+    case DICTIONARY_ELEMENTS: {
+      NumberDictionary* dict = element_dictionary();
+      info->number_of_slow_used_elements_ += dict->NumberOfElements();
+      info->number_of_slow_unused_elements_ +=
+          dict->Capacity() - dict->NumberOfElements();
+      break;
+    }
+    default:
+      UNREACHABLE();
+      break;
   }
 }
 
@@ -1057,11 +1129,10 @@ void JSObject::SpillInformation::Print() {
 
 void DescriptorArray::PrintDescriptors() {
   PrintF("Descriptor array  %d\n", number_of_descriptors());
-  int number = 0;
-  for (DescriptorReader r(this); !r.eos(); r.advance()) {
+  for (int i = 0; i < number_of_descriptors(); i++) {
+    PrintF(" %d: ", i);
     Descriptor desc;
-    r.Get(&desc);
-    PrintF(" %d: ", number++);
+    Get(i, &desc);
     desc.Print();
   }
   PrintF("\n");
@@ -1071,14 +1142,14 @@ void DescriptorArray::PrintDescriptors() {
 bool DescriptorArray::IsSortedNoDuplicates() {
   String* current_key = NULL;
   uint32_t current = 0;
-  for (DescriptorReader r(this); !r.eos(); r.advance()) {
-    String* key = r.GetKey();
+  for (int i = 0; i < number_of_descriptors(); i++) {
+    String* key = GetKey(i);
     if (key == current_key) {
       PrintDescriptors();
       return false;
     }
     current_key = key;
-    uint32_t hash = r.GetKey()->Hash();
+    uint32_t hash = GetKey(i)->Hash();
     if (hash < current) {
       PrintDescriptors();
       return false;

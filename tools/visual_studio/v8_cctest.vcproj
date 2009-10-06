@@ -18,7 +18,7 @@
 		<Configuration
 			Name="Debug|Win32"
 			ConfigurationType="1"
-			InheritedPropertySheets=".\common.vsprops;.\debug.vsprops"
+			InheritedPropertySheets=".\common.vsprops;.\ia32.vsprops;.\debug.vsprops"
 			>
 			<Tool
 				Name="VCPreBuildEventTool"
@@ -79,7 +79,7 @@
 		<Configuration
 			Name="Release|Win32"
 			ConfigurationType="1"
-			InheritedPropertySheets=".\common.vsprops;.\release.vsprops"
+			InheritedPropertySheets=".\common.vsprops;.\ia32.vsprops;.\release.vsprops"
 			>
 			<Tool
 				Name="VCPreBuildEventTool"
@@ -186,6 +186,10 @@
 			>
 		</File>
 		<File
+			RelativePath="..\..\test\cctest\test-func-name-inference.cc"
+			>
+		</File>
+		<File
 			RelativePath="..\..\test\cctest\test-hashmap.cc"
 			>
 		</File>
@@ -198,7 +202,15 @@
 			>
 		</File>
 		<File
-			RelativePath="..\..\test\cctest\test-log-ia32.cc"
+			RelativePath="..\..\test\cctest\test-log.cc"
+			>
+		</File>
+		<File
+			RelativePath="..\..\test\cctest\test-log-utils.cc"
+			>
+		</File>
+		<File
+			RelativePath="..\..\test\cctest\test-log-stack-tracer.cc"
 			>
 		</File>
 		<File
@@ -227,6 +239,10 @@
 		</File>
 		<File
 			RelativePath="..\..\test\cctest\test-utils.cc"
+			>
+		</File>
+		<File
+			RelativePath="..\..\test\cctest\test-version.cc"
 			>
 		</File>
 	</Files>

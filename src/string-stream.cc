@@ -30,7 +30,8 @@
 #include "factory.h"
 #include "string-stream.h"
 
-namespace v8 { namespace internal {
+namespace v8 {
+namespace internal {
 
 static const int kMentionedObjectCacheMaxSize = 256;
 static List<HeapObject*, PreallocatedStorage>* debug_object_cache = NULL;
@@ -43,12 +44,6 @@ char* HeapStringAllocator::allocate(unsigned bytes) {
 }
 
 
-NoAllocationStringAllocator::NoAllocationStringAllocator(unsigned bytes) {
-  size_ = bytes;
-  space_ = NewArray<char>(bytes);
-}
-
-
 NoAllocationStringAllocator::NoAllocationStringAllocator(char* memory,
                                                          unsigned size) {
   size_ = size;
@@ -57,19 +52,26 @@ NoAllocationStringAllocator::NoAllocationStringAllocator(char* memory,
 
 
 bool StringStream::Put(char c) {
-  if (space() == 0) return false;
-  if (length_ >= capacity_ - 1) {
+  if (full()) return false;
+  ASSERT(length_ < capacity_);
+  // Since the trailing '\0' is not accounted for in length_ fullness is
+  // indicated by a difference of 1 between length_ and capacity_. Thus when
+  // reaching a difference of 2 we need to grow the buffer.
+  if (length_ == capacity_ - 2) {
     unsigned new_capacity = capacity_;
     char* new_buffer = allocator_->grow(&new_capacity);
     if (new_capacity > capacity_) {
       capacity_ = new_capacity;
       buffer_ = new_buffer;
     } else {
-      // Indicate truncation with dots.
-      memset(cursor(), '.', space());
-      length_ = capacity_;
-      buffer_[length_ - 2] = '\n';
-      buffer_[length_ - 1] = '\0';
+      // Reached the end of the available buffer.
+      ASSERT(capacity_ >= 5);
+      length_ = capacity_ - 1;  // Indicate fullness of the stream.
+      buffer_[length_ - 4] = '.';
+      buffer_[length_ - 3] = '.';
+      buffer_[length_ - 2] = '.';
+      buffer_[length_ - 1] = '\n';
+      buffer_[length_] = '\0';
       return false;
     }
   }
@@ -95,8 +97,7 @@ static bool IsControlChar(char c) {
 
 void StringStream::Add(Vector<const char> format, Vector<FmtElm> elms) {
   // If we already ran out of space then return immediately.
-  if (space() == 0)
-    return;
+  if (full()) return;
   int offset = 0;
   int elm = 0;
   while (offset < format.length()) {
@@ -152,7 +153,7 @@ void StringStream::Add(Vector<const char> format, Vector<FmtElm> elms) {
       }
       break;
     }
-    case 'i': case 'd': case 'u': case 'x': case 'c': case 'p': case 'X': {
+    case 'i': case 'd': case 'u': case 'x': case 'c': case 'X': {
       int value = current.data_.u_int_;
       EmbeddedVector<char, 24> formatted;
       int length = OS::SNPrintF(formatted, temp.start(), value);
@@ -162,6 +163,13 @@ void StringStream::Add(Vector<const char> format, Vector<FmtElm> elms) {
     case 'f': case 'g': case 'G': case 'e': case 'E': {
       double value = current.data_.u_double_;
       EmbeddedVector<char, 28> formatted;
+      OS::SNPrintF(formatted, temp.start(), value);
+      Add(formatted.start());
+      break;
+    }
+    case 'p': {
+      void* value = current.data_.u_pointer_;
+      EmbeddedVector<char, 20> formatted;
       OS::SNPrintF(formatted, temp.start(), value);
       Add(formatted.start());
       break;
@@ -336,10 +344,11 @@ void StringStream::PrintUsingMap(JSObject* js_object) {
     Add("<Invalid map>\n");
     return;
   }
-  for (DescriptorReader r(map->instance_descriptors()); !r.eos(); r.advance()) {
-    switch (r.type()) {
+  DescriptorArray* descs = map->instance_descriptors();
+  for (int i = 0; i < descs->number_of_descriptors(); i++) {
+    switch (descs->GetType(i)) {
       case FIELD: {
-        Object* key = r.GetKey();
+        Object* key = descs->GetKey(i);
         if (key->IsString() || key->IsNumber()) {
           int len = 3;
           if (key->IsString()) {
@@ -353,7 +362,7 @@ void StringStream::PrintUsingMap(JSObject* js_object) {
             key->ShortPrint();
           }
           Add(": ");
-          Object* value = js_object->FastPropertyAt(r.GetFieldIndex());
+          Object* value = js_object->FastPropertyAt(descs->GetFieldIndex(i));
           Add("%o\n", value);
         }
       }
@@ -564,12 +573,10 @@ char* HeapStringAllocator::grow(unsigned* bytes) {
 }
 
 
+// Only grow once to the maximum allowable size.
 char* NoAllocationStringAllocator::grow(unsigned* bytes) {
-  unsigned new_bytes = *bytes * 2;
-  if (new_bytes > size_) {
-    new_bytes = size_;
-  }
-  *bytes = new_bytes;
+  ASSERT(size_ >= *bytes);
+  *bytes = size_;
   return space_;
 }
 

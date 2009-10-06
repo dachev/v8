@@ -111,7 +111,7 @@ void DeclarationContext::InitializeIfNeeded() {
   if (is_initialized_) return;
   HandleScope scope;
   Local<FunctionTemplate> function = FunctionTemplate::New();
-  Local<Value> data = Integer::New(reinterpret_cast<intptr_t>(this));
+  Local<Value> data = External::New(this);
   GetHolder(function)->SetNamedPropertyHandler(&HandleGet,
                                                &HandleSet,
                                                &HandleHas,
@@ -179,8 +179,7 @@ v8::Handle<Boolean> DeclarationContext::HandleHas(Local<String> key,
 
 
 DeclarationContext* DeclarationContext::GetInstance(const AccessorInfo& info) {
-  Local<Value> data = info.Data();
-  return reinterpret_cast<DeclarationContext*>(Int32::Cast(*data)->Value());
+  return static_cast<DeclarationContext*>(External::Unwrap(info.Data()));
 }
 
 
@@ -389,7 +388,7 @@ class AppearingPropertyContext: public DeclarationContext {
         state_ = UNKNOWN;
         return True();
       default:
-        ASSERT(state_ == UNKNOWN);
+        CHECK(state_ == UNKNOWN);
         break;
     }
     // Do the lookup in the object.
@@ -479,7 +478,7 @@ class ReappearingPropertyContext: public DeclarationContext {
         state_ = UNKNOWN;
         return False();
       default:
-        ASSERT(state_ == UNKNOWN);
+        CHECK(state_ == UNKNOWN);
         break;
     }
     // Do the lookup in the object.
@@ -534,10 +533,10 @@ TEST(ExistsInPrototype) {
 
   { ExistsInPrototypeContext context;
     context.Check("var x; x",
-                  0,
+                  1,  // get
                   0,
                   1,  // declaration
-                  EXPECT_RESULT, Undefined());
+                  EXPECT_EXCEPTION);
   }
 
   { ExistsInPrototypeContext context;

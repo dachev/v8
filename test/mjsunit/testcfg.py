@@ -29,9 +29,12 @@ import test
 import os
 from os.path import join, dirname, exists
 import re
+import tempfile
 
 
 FLAGS_PATTERN = re.compile(r"//\s+Flags:(.*)")
+FILES_PATTERN = re.compile(r"//\s+Files:(.*)")
+SELF_SCRIPT_PATTERN = re.compile(r"//\s+Env: TEST_FILE_NAME")
 
 
 class MjsunitTestCase(test.TestCase):
@@ -41,6 +44,7 @@ class MjsunitTestCase(test.TestCase):
     self.file = file
     self.config = config
     self.mode = mode
+    self.self_script = False
 
   def GetLabel(self):
     return "%s %s" % (self.mode, self.GetName())
@@ -54,13 +58,43 @@ class MjsunitTestCase(test.TestCase):
     flags_match = FLAGS_PATTERN.search(source)
     if flags_match:
       result += flags_match.group(1).strip().split()
+    additional_files = []
+    files_match = FILES_PATTERN.search(source);
+    # Accept several lines of 'Files:'
+    while True:
+      if files_match:
+        additional_files += files_match.group(1).strip().split()
+        files_match = FILES_PATTERN.search(source, files_match.end())
+      else:
+        break
+    for a_file in additional_files:
+      result.append(join(dirname(self.config.root), '..', a_file))
     framework = join(dirname(self.config.root), 'mjsunit', 'mjsunit.js')
+    if SELF_SCRIPT_PATTERN.search(source):
+      result.append(self.CreateSelfScript())
     result += [framework, self.file]
     return result
 
   def GetSource(self):
     return open(self.file).read()
 
+  def CreateSelfScript(self):
+    (fd_self_script, self_script) = tempfile.mkstemp(suffix=".js")
+    def MakeJsConst(name, value):
+      return "var %(name)s=\'%(value)s\';\n" % \
+             {'name': name, \
+              'value': value.replace('\\', '\\\\').replace('\'', '\\\'') }
+    try:
+      os.write(fd_self_script, MakeJsConst('TEST_FILE_NAME', self.file))
+    except IOError, e:
+      test.PrintError("write() " + str(e))
+    os.close(fd_self_script)
+    self.self_script = self_script
+    return self_script
+
+  def Cleanup(self):
+    if self.self_script:
+      test.CheckedUnlink(self.self_script)
 
 class MjsunitTestConfiguration(test.TestConfiguration):
 
@@ -76,7 +110,8 @@ class MjsunitTestConfiguration(test.TestConfiguration):
     mjsunit = [current_path + [t] for t in self.Ls(self.root)]
     regress = [current_path + ['regress', t] for t in self.Ls(join(self.root, 'regress'))]
     bugs = [current_path + ['bugs', t] for t in self.Ls(join(self.root, 'bugs'))]
-    all_tests = mjsunit + regress + bugs
+    tools = [current_path + ['tools', t] for t in self.Ls(join(self.root, 'tools'))]
+    all_tests = mjsunit + regress + bugs + tools
     result = []
     for test in all_tests:
       if self.Contains(path, test):

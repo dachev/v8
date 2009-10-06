@@ -31,7 +31,8 @@
 #include "token.h"
 #include "char-predicates-inl.h"
 
-namespace v8 { namespace internal {
+namespace v8 {
+namespace internal {
 
 
 class UTF8Buffer {
@@ -39,40 +40,86 @@ class UTF8Buffer {
   UTF8Buffer();
   ~UTF8Buffer();
 
-  void Initialize(char* src, int length);
-  void AddChar(uc32 c);
-  void Reset() { pos_ = 0; }
-  int pos() const { return pos_; }
+  void AddChar(uc32 c) {
+    if (cursor_ <= limit_ &&
+        static_cast<unsigned>(c) <= unibrow::Utf8::kMaxOneByteChar) {
+      *cursor_++ = static_cast<char>(c);
+    } else {
+      AddCharSlow(c);
+    }
+  }
+
+  void Reset() { cursor_ = data_; }
+  int pos() const { return cursor_ - data_; }
   char* data() const { return data_; }
 
  private:
   char* data_;
-  int size_;
-  int pos_;
+  char* cursor_;
+  char* limit_;
+
+  int Capacity() const {
+    return (limit_ - data_) + unibrow::Utf8::kMaxEncodedSize;
+  }
+
+  static char* ComputeLimit(char* data, int capacity) {
+    return (data + capacity) - unibrow::Utf8::kMaxEncodedSize;
+  }
+
+  void AddCharSlow(uc32 c);
 };
 
 
 class UTF16Buffer {
  public:
   UTF16Buffer();
+  virtual ~UTF16Buffer() {}
 
-  void Initialize(Handle<String> data, unibrow::CharacterStream* stream);
-  void PushBack(uc32 ch);
-  uc32 Advance();  // returns a value < 0 when the buffer end is reached
-  uint16_t CharAt(int index);
+  virtual void PushBack(uc32 ch) = 0;
+  // returns a value < 0 when the buffer end is reached
+  virtual uc32 Advance() = 0;
+  virtual void SeekForward(int pos) = 0;
+
   int pos() const { return pos_; }
   int size() const { return size_; }
   Handle<String> SubString(int start, int end);
-  List<uc32>* pushback_buffer() { return &pushback_buffer_; }
-  void SeekForward(int pos);
 
- private:
+ protected:
   Handle<String> data_;
   int pos_;
   int size_;
+};
+
+
+class CharacterStreamUTF16Buffer: public UTF16Buffer {
+ public:
+  CharacterStreamUTF16Buffer();
+  virtual ~CharacterStreamUTF16Buffer() {}
+  void Initialize(Handle<String> data, unibrow::CharacterStream* stream);
+  virtual void PushBack(uc32 ch);
+  virtual uc32 Advance();
+  virtual void SeekForward(int pos);
+
+ private:
   List<uc32> pushback_buffer_;
   uc32 last_;
   unibrow::CharacterStream* stream_;
+
+  List<uc32>* pushback_buffer() { return &pushback_buffer_; }
+};
+
+
+class TwoByteStringUTF16Buffer: public UTF16Buffer {
+ public:
+  TwoByteStringUTF16Buffer();
+  virtual ~TwoByteStringUTF16Buffer() {}
+  void Initialize(Handle<ExternalTwoByteString> data);
+  virtual void PushBack(uc32 ch);
+  virtual uc32 Advance();
+  virtual void SeekForward(int pos);
+
+ private:
+  const uint16_t* raw_data_;
 };
 
 
@@ -165,9 +212,14 @@ class Scanner {
   static unibrow::Predicate<unibrow::LineTerminator, 128> kIsLineTerminator;
   static unibrow::Predicate<unibrow::WhiteSpace, 128> kIsWhiteSpace;
 
+  static const int kCharacterLookaheadBufferSize = 1;
+
  private:
+  CharacterStreamUTF16Buffer char_stream_buffer_;
+  TwoByteStringUTF16Buffer two_byte_string_buffer_;
+
   // Source.
-  UTF16Buffer source_;
+  UTF16Buffer* source_;
   int position_;
 
   // Buffer to hold literal values (identifiers, strings, numbers)
@@ -192,8 +244,6 @@ class Scanner {
   bool has_line_terminator_before_next_;
   bool is_pre_parsing_;
 
-  static const int kCharacterLookaheadBufferSize = 1;
-
   // Literal buffer support
   void StartLiteral();
   void AddChar(uc32 ch);
@@ -201,10 +251,13 @@ class Scanner {
   void TerminateLiteral();
 
   // Low-level scanning support.
-  void Advance();
-  void PushBack(uc32 ch);
+  void Advance() { c0_ = source_->Advance(); }
+  void PushBack(uc32 ch) {
+    source_->PushBack(ch);
+    c0_ = ch;
+  }
 
-  void SkipWhiteSpace(bool initial);
+  bool SkipWhiteSpace();
   Token::Value SkipSingleLineComment();
   Token::Value SkipMultiLineComment();
 
@@ -212,7 +265,6 @@ class Scanner {
   inline Token::Value Select(uc32 next, Token::Value then, Token::Value else_);
 
   void Scan();
-  Token::Value ScanToken();
   void ScanDecimalDigits();
   Token::Value ScanNumber(bool seen_period);
   Token::Value ScanIdentifier();
@@ -226,7 +278,7 @@ class Scanner {
 
   // Return the current source position.
   int source_pos() {
-    return source_.pos() - kCharacterLookaheadBufferSize + position_;
+    return source_->pos() - kCharacterLookaheadBufferSize + position_;
   }
 
   // Decodes a unicode escape-sequence which is part of an identifier.

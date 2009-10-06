@@ -30,7 +30,8 @@
 
 #include "hashmap.h"
 
-namespace v8 { namespace internal {
+namespace v8 {
+namespace internal {
 
 // A TypeCode is used to distinguish different kinds of external reference.
 // It is a single bit to make testing for types easy.
@@ -70,7 +71,7 @@ class ExternalReferenceEncoder {
  private:
   HashMap encodings_;
   static uint32_t Hash(Address key) {
-    return reinterpret_cast<uint32_t>(key) >> 2;
+    return static_cast<uint32_t>(reinterpret_cast<uintptr_t>(key) >> 2);
   }
 
   int IndexOf(Address key) const;
@@ -231,6 +232,12 @@ class SnapshotReader {
     return result;
   }
 
+  Address GetAddress() {
+    Address result;
+    GetBytes(reinterpret_cast<Address>(&result), sizeof(result));
+    return result;
+  }
+
   void GetBytes(Address a, int size) {
     ASSERT(str_ + size <= end_);
     memcpy(a, str_, size);
@@ -313,10 +320,11 @@ class Deserializer: public ObjectVisitor {
   bool has_log_;  // The file has log information.
 
   // Resolve caches the following:
-  List<Page*> map_pages_;          // All pages in the map space.
+  List<Page*> map_pages_;  // All pages in the map space.
+  List<Page*> cell_pages_;  // All pages in the cell space.
   List<Page*> old_pointer_pages_;  // All pages in the old pointer space.
-  List<Page*> old_data_pages_;     // All pages in the old data space.
-  List<Page*> code_pages_;
+  List<Page*> old_data_pages_;  // All pages in the old data space.
+  List<Page*> code_pages_;  // All pages in the code space.
   List<Object*> large_objects_;    // All known large objects.
   // A list of global handles at deserialization time.
   List<Object**> global_handles_;

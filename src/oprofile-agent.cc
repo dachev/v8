@@ -29,7 +29,8 @@
 
 #include "oprofile-agent.h"
 
-namespace v8 { namespace internal {
+namespace v8 {
+namespace internal {
 
 #ifdef ENABLE_OPROFILE_AGENT
 op_agent_t OProfileAgent::handle_ = NULL;
@@ -51,6 +52,10 @@ bool OProfileAgent::Initialize() {
     return true;
   }
 #else
+  if (FLAG_oprofile) {
+    OS::Print("Warning: --oprofile specified but binary compiled without "
+              "oprofile support.\n");
+  }
   return true;
 #endif
 }

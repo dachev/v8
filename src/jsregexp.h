@@ -28,7 +28,8 @@
 #ifndef V8_JSREGEXP_H_
 #define V8_JSREGEXP_H_
 
-namespace v8 { namespace internal {
+namespace v8 {
+namespace internal {
 
 
 class RegExpMacroAssembler;
@@ -36,13 +37,15 @@ class RegExpMacroAssembler;
 
 class RegExpImpl {
  public:
-  static inline bool UseNativeRegexp() {
-#ifdef ARM
-    return false;
+  // Whether V8 is compiled with native regexp support or not.
+  static bool UsesNativeRegExp() {
+#ifdef V8_NATIVE_REGEXP
+    return true;
 #else
-    return FLAG_regexp_native;
+    return false;
 #endif
   }
+
   // Creates a regular expression literal in the old space.
   // This function calls the garbage collector if necessary.
   static Handle<Object> CreateRegExpLiteral(Handle<JSFunction> constructor,
@@ -147,7 +150,8 @@ class RegExpImpl {
   static String* last_ascii_string_;
   static String* two_byte_cached_string_;
 
-  static bool EnsureCompiledIrregexp(Handle<JSRegExp> re, bool is_ascii);
+  static bool CompileIrregexp(Handle<JSRegExp> re, bool is_ascii);
+  static inline bool EnsureCompiledIrregexp(Handle<JSRegExp> re, bool is_ascii);
 
 
   // Set the subject cache.  The previous string buffer is not deleted, so the
@@ -207,108 +211,6 @@ class CharacterRange {
  private:
   uc16 from_;
   uc16 to_;
-};
-
-
-template <typename Node, class Callback>
-static void DoForEach(Node* node, Callback* callback);
-
-
-// A zone splay tree.  The config type parameter encapsulates the
-// different configurations of a concrete splay tree:
-//
-//   typedef Key: the key type
-//   typedef Value: the value type
-//   static const kNoKey: the dummy key used when no key is set
-//   static const kNoValue: the dummy value used to initialize nodes
-//   int (Compare)(Key& a, Key& b) -> {-1, 0, 1}: comparison function
-//
-template <typename Config>
-class ZoneSplayTree : public ZoneObject {
- public:
-  typedef typename Config::Key Key;
-  typedef typename Config::Value Value;
-
-  class Locator;
-
-  ZoneSplayTree() : root_(NULL) { }
-
-  // Inserts the given key in this tree with the given value.  Returns
-  // true if a node was inserted, otherwise false.  If found the locator
-  // is enabled and provides access to the mapping for the key.
-  bool Insert(const Key& key, Locator* locator);
-
-  // Looks up the key in this tree and returns true if it was found,
-  // otherwise false.  If the node is found the locator is enabled and
-  // provides access to the mapping for the key.
-  bool Find(const Key& key, Locator* locator);
-
-  // Finds the mapping with the greatest key less than or equal to the
-  // given key.
-  bool FindGreatestLessThan(const Key& key, Locator* locator);
-
-  // Find the mapping with the greatest key in this tree.
-  bool FindGreatest(Locator* locator);
-
-  // Finds the mapping with the least key greater than or equal to the
-  // given key.
-  bool FindLeastGreaterThan(const Key& key, Locator* locator);
-
-  // Find the mapping with the least key in this tree.
-  bool FindLeast(Locator* locator);
-
-  // Remove the node with the given key from the tree.
-  bool Remove(const Key& key);
-
-  bool is_empty() { return root_ == NULL; }
-
-  // Perform the splay operation for the given key. Moves the node with
-  // the given key to the top of the tree.  If no node has the given
-  // key, the last node on the search path is moved to the top of the
-  // tree.
-  void Splay(const Key& key);
-
-  class Node : public ZoneObject {
-   public:
-    Node(const Key& key, const Value& value)
-        : key_(key),
-          value_(value),
-          left_(NULL),
-          right_(NULL) { }
-    Key key() { return key_; }
-    Value value() { return value_; }
-    Node* left() { return left_; }
-    Node* right() { return right_; }
-   private:
-    friend class ZoneSplayTree;
-    friend class Locator;
-    Key key_;
-    Value value_;
-    Node* left_;
-    Node* right_;
-  };
-
-  // A locator provides access to a node in the tree without actually
-  // exposing the node.
-  class Locator {
-   public:
-    explicit Locator(Node* node) : node_(node) { }
-    Locator() : node_(NULL) { }
-    const Key& key() { return node_->key_; }
-    Value& value() { return node_->value_; }
-    void set_value(const Value& value) { node_->value_ = value; }
-    inline void bind(Node* node) { node_ = node; }
-   private:
-    Node* node_;
-  };
-
-  template <class Callback>
-  void ForEach(Callback* c) {
-    DoForEach<typename ZoneSplayTree<Config>::Node, Callback>(root_, c);
-  }
-
- private:
-  Node* root_;
 };
 
 
@@ -1003,14 +905,14 @@ class ChoiceNode: public RegExpNode {
   virtual bool try_to_emit_quick_check_for_alternative(int i) { return true; }
 
  protected:
-  int GreedyLoopTextLength(GuardedAlternative *alternative);
+  int GreedyLoopTextLength(GuardedAlternative* alternative);
   ZoneList<GuardedAlternative>* alternatives_;
 
  private:
   friend class DispatchTableConstructor;
   friend class Analysis;
   void GenerateGuard(RegExpMacroAssembler* macro_assembler,
-                     Guard *guard,
+                     Guard* guard,
                      Trace* trace);
   int CalculatePreloadCharacters(RegExpCompiler* compiler);
   void EmitOutOfLineContinuation(RegExpCompiler* compiler,
@@ -1288,7 +1190,7 @@ FOR_EACH_NODE_TYPE(DECLARE_VISIT)
   void set_choice_index(int value) { choice_index_ = value; }
 
  protected:
-  DispatchTable *table_;
+  DispatchTable* table_;
   int choice_index_;
   bool ignore_case_;
 };
@@ -1309,7 +1211,7 @@ FOR_EACH_NODE_TYPE(DECLARE_VISIT)
 class Analysis: public NodeVisitor {
  public:
   explicit Analysis(bool ignore_case)
-      : ignore_case_(ignore_case) { }
+      : ignore_case_(ignore_case), error_message_(NULL) { }
   void EnsureAnalyzed(RegExpNode* node);
 
 #define DECLARE_VISIT(Type)                                          \
@@ -1318,8 +1220,17 @@ FOR_EACH_NODE_TYPE(DECLARE_VISIT)
 #undef DECLARE_VISIT
   virtual void VisitLoopChoice(LoopChoiceNode* that);
 
+  bool has_failed() { return error_message_ != NULL; }
+  const char* error_message() {
+    ASSERT(error_message_ != NULL);
+    return error_message_;
+  }
+  void fail(const char* error_message) {
+    error_message_ = error_message;
+  }
  private:
   bool ignore_case_;
+  const char* error_message_;
 
   DISALLOW_IMPLICIT_CONSTRUCTORS(Analysis);
 };

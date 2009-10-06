@@ -46,12 +46,26 @@ const $isFinite = GlobalIsFinite;
 
 // Helper function used to install functions on objects.
 function InstallFunctions(object, attributes, functions) {
+  if (functions.length >= 8) {
+    %OptimizeObjectForAddingMultipleProperties(object, functions.length >> 1);
+  }
   for (var i = 0; i < functions.length; i += 2) {
     var key = functions[i];
     var f = functions[i + 1];
     %FunctionSetName(f, key);
     %SetProperty(object, key, f, attributes);
   }
+  %TransformToFastProperties(object);
+}
+
+// Emulates JSC by installing functions on a hidden prototype that
+// lies above the current object/prototype.  This lets you override
+// functions on String.prototype etc. and then restore the old function
+// with delete.  See http://code.google.com/p/chromium/issues/detail?id=1717
+function InstallFunctionsOnHiddenPrototype(object, attributes, functions) {
+  var hidden_prototype = new $Object();
+  %SetHiddenPrototype(object, hidden_prototype);
+  InstallFunctions(hidden_prototype, attributes, functions);
 }
 
 
@@ -105,12 +119,16 @@ function GlobalParseFloat(string) {
 function GlobalEval(x) {
   if (!IS_STRING(x)) return x;
 
-  if (this !== global && this !== %GlobalReceiver(global)) {
-    throw new $EvalError('The "this" object passed to eval must ' + 
+  var global_receiver = %GlobalReceiver(global);
+  var this_is_global_receiver = (this === global_receiver);
+  var global_is_detached = (global === global_receiver);
+
+  if (!this_is_global_receiver || global_is_detached) {
+    throw new $EvalError('The "this" object passed to eval must ' +
                          'be the global object from which eval originated');
   }
-  
-  var f = %CompileString(x, 0);
+
+  var f = %CompileString(x, false);
   if (!IS_FUNCTION(f)) return f;
 
   return f.call(this);
@@ -121,7 +139,7 @@ function GlobalEval(x) {
 function GlobalExecScript(expr, lang) {
   // NOTE: We don't care about the character casing.
   if (!lang || /javascript/i.test(lang)) {
-    var f = %CompileString(ToString(expr), 0);
+    var f = %CompileString(ToString(expr), false);
     f.call(%GlobalReceiver(global));
   }
   return null;
@@ -140,7 +158,7 @@ function SetupGlobal() {
 
   // ECMA-262 - 15.1.1.3.
   %SetProperty(global, "undefined", void 0, DONT_ENUM | DONT_DELETE);
-  
+
   // Setup non-enumerable function on the global object.
   InstallFunctions(global, DONT_ENUM, $Array(
     "isNaN", GlobalIsNaN,
@@ -160,7 +178,7 @@ SetupGlobal();
 
 
 %SetCode($Boolean, function(x) {
-  if (%IsConstructCall()) {
+  if (%_IsConstructCall()) {
     %_SetValueOf(this, ToBoolean(x));
   } else {
     return ToBoolean(x);
@@ -178,7 +196,7 @@ $Object.prototype.constructor = $Object;
 
 // ECMA-262 - 15.2.4.2
 function ObjectToString() {
-  var c = %ClassOf(this);
+  var c = %_ClassOf(this);
   // Hide Arguments from the outside.
   if (c === 'Arguments') c  = 'Object';
   return "[object " + c + "]";
@@ -259,7 +277,7 @@ function ObjectLookupSetter(name) {
 
 
 %SetCode($Object, function(x) {
-  if (%IsConstructCall()) {
+  if (%_IsConstructCall()) {
     if (x == null) return this;
     return ToObject(x);
   } else {
@@ -297,7 +315,7 @@ SetupObject();
 function BooleanToString() {
   // NOTE: Both Boolean objects and values can enter here as
   // 'this'. This is not as dictated by ECMA-262.
-  if (!IS_BOOLEAN(this) && !%HasBooleanClass(this))
+  if (!IS_BOOLEAN(this) && !IS_BOOLEAN_WRAPPER(this))
     throw new $TypeError('Boolean.prototype.toString is not generic');
   return ToString(%_ValueOf(this));
 }
@@ -306,9 +324,14 @@ function BooleanToString() {
 function BooleanValueOf() {
   // NOTE: Both Boolean objects and values can enter here as
   // 'this'. This is not as dictated by ECMA-262.
-  if (!IS_BOOLEAN(this) && !%HasBooleanClass(this))
+  if (!IS_BOOLEAN(this) && !IS_BOOLEAN_WRAPPER(this))
     throw new $TypeError('Boolean.prototype.valueOf is not generic');
   return %_ValueOf(this);
+}
+
+
+function BooleanToJSON(key) {
+  return CheckJSONPrimitive(this.valueOf());
 }
 
 
@@ -318,7 +341,8 @@ function BooleanValueOf() {
 function SetupBoolean() {
   InstallFunctions($Boolean.prototype, DONT_ENUM, $Array(
     "toString", BooleanToString,
-    "valueOf", BooleanValueOf
+    "valueOf", BooleanValueOf,
+    "toJSON", BooleanToJSON
   ));
 }
 
@@ -330,7 +354,7 @@ SetupBoolean();
 // Set the Number function and constructor.
 %SetCode($Number, function(x) {
   var value = %_ArgumentsLength() == 0 ? 0 : ToNumber(x);
-  if (%IsConstructCall()) {
+  if (%_IsConstructCall()) {
     %_SetValueOf(this, value);
   } else {
     return value;
@@ -345,7 +369,7 @@ function NumberToString(radix) {
   // 'this'. This is not as dictated by ECMA-262.
   var number = this;
   if (!IS_NUMBER(this)) {
-    if (!%HasNumberClass(this))
+    if (!IS_NUMBER_WRAPPER(this))
       throw new $TypeError('Number.prototype.toString is not generic');
     // Get the value of this number in case it's an object.
     number = %_ValueOf(this);
@@ -375,7 +399,7 @@ function NumberToLocaleString() {
 function NumberValueOf() {
   // NOTE: Both Number objects and values can enter here as
   // 'this'. This is not as dictated by ECMA-262.
-  if (!IS_NUMBER(this) && !%HasNumberClass(this))
+  if (!IS_NUMBER(this) && !IS_NUMBER_WRAPPER(this))
     throw new $TypeError('Number.prototype.valueOf is not generic');
   return %_ValueOf(this);
 }
@@ -418,12 +442,26 @@ function NumberToPrecision(precision) {
 }
 
 
+function CheckJSONPrimitive(val) {
+  if (!IsPrimitive(val))
+    throw MakeTypeError('result_not_primitive', ['toJSON', val]);
+  return val;
+}
+
+
+function NumberToJSON(key) {
+  return CheckJSONPrimitive(this.valueOf());
+}
+
+
 // ----------------------------------------------------------------------------
 
 function SetupNumber() {
+  %OptimizeObjectForAddingMultipleProperties($Number.prototype, 8);
   // Setup the constructor property on the Number prototype object.
   %SetProperty($Number.prototype, "constructor", $Number, DONT_ENUM);
 
+  %OptimizeObjectForAddingMultipleProperties($Number, 5);
   // ECMA-262 section 15.7.3.1.
   %SetProperty($Number,
                "MAX_VALUE",
@@ -447,6 +485,7 @@ function SetupNumber() {
                "POSITIVE_INFINITY",
                1/0,
                DONT_ENUM | DONT_DELETE | READ_ONLY);
+  %TransformToFastProperties($Number);
 
   // Setup non-enumerable functions on the Number prototype object.
   InstallFunctions($Number.prototype, DONT_ENUM, $Array(
@@ -455,7 +494,8 @@ function SetupNumber() {
     "valueOf", NumberValueOf,
     "toFixed", NumberToFixed,
     "toExponential", NumberToExponential,
-    "toPrecision", NumberToPrecision
+    "toPrecision", NumberToPrecision,
+    "toJSON", NumberToJSON
   ));
 }
 
@@ -469,10 +509,9 @@ SetupNumber();
 $Function.prototype.constructor = $Function;
 
 function FunctionSourceString(func) {
-  // NOTE: Both Function objects and values can enter here as
-  // 'func'. This is not as dictated by ECMA-262.
-  if (!IS_FUNCTION(func) && !%HasFunctionClass(func))
+  if (!IS_FUNCTION(func)) {
     throw new $TypeError('Function.prototype.toString is not generic');
+  }
 
   var source = %FunctionGetSourceCode(func);
   if (!IS_STRING(source)) {
@@ -521,7 +560,7 @@ function NewFunction(arg1) {  // length == 1
 
   // The call to SetNewFunctionAttributes will ensure the prototype
   // property of the resulting function is enumerable (ECMA262, 15.3.5.2).
-  var f = %CompileString(source, -1)();
+  var f = %CompileString(source, false)();
   %FunctionSetName(f, "anonymous");
   return %SetNewFunctionAttributes(f);
 }
@@ -537,4 +576,3 @@ function SetupFunction() {
 }
 
 SetupFunction();
-

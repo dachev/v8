@@ -29,14 +29,18 @@
 
 // Touch the RegExp and Date functions to make sure that date-delay.js and
 // regexp-delay.js has been loaded. This is required as the mirrors use
-// functions within these files through the builtins object. See the
-// function DateToISO8601_ as an example.
+// functions within these files through the builtins object.
 RegExp;
 Date;
 
 
+// Handle id counters.
 var next_handle_ = 0;
+var next_transient_handle_ = -1;
+
+// Mirror cache.
 var mirror_cache_ = [];
+
 
 /**
  * Clear the mirror handle cache.
@@ -51,19 +55,25 @@ function ClearMirrorCache() {
  * Returns the mirror for a specified value or object.
  *
  * @param {value or Object} value the value or object to retreive the mirror for
+ * @param {boolean} transient indicate whether this object is transient and
+ *    should not be added to the mirror cache. The default is not transient.
  * @returns {Mirror} the mirror reflects the passed value or object
  */
-function MakeMirror(value) {
+function MakeMirror(value, opt_transient) {
   var mirror;
-  for (id in mirror_cache_) {
-    mirror = mirror_cache_[id];
-    if (mirror.value() === value) {
-      return mirror;
-    }
-    // Special check for NaN as NaN == NaN is false.
-    if (mirror.isNumber() && isNaN(mirror.value()) &&
-        typeof value == 'number' && isNaN(value)) {
-      return mirror;
+
+  // Look for non transient mirrors in the mirror cache.
+  if (!opt_transient) {
+    for (id in mirror_cache_) {
+      mirror = mirror_cache_[id];
+      if (mirror.value() === value) {
+        return mirror;
+      }
+      // Special check for NaN as NaN == NaN is false.
+      if (mirror.isNumber() && isNaN(mirror.value()) &&
+          typeof value == 'number' && isNaN(value)) {
+        return mirror;
+      }
     }
   }
   
@@ -90,7 +100,7 @@ function MakeMirror(value) {
   } else if (IS_SCRIPT(value)) {
     mirror = new ScriptMirror(value);
   } else {
-    mirror = new ObjectMirror(value);
+    mirror = new ObjectMirror(value, OBJECT_TYPE, opt_transient);
   }
 
   mirror_cache_[mirror.handle()] = mirror;
@@ -155,6 +165,8 @@ const ERROR_TYPE = 'error';
 const PROPERTY_TYPE = 'property';
 const FRAME_TYPE = 'frame';
 const SCRIPT_TYPE = 'script';
+const CONTEXT_TYPE = 'context';
+const SCOPE_TYPE = 'scope';
 
 // Maximum length when sending strings through the JSON protocol.
 const kMaxProtocolStringLength = 80;
@@ -183,6 +195,13 @@ PropertyAttribute.None       = NONE;
 PropertyAttribute.ReadOnly   = READ_ONLY;
 PropertyAttribute.DontEnum   = DONT_ENUM;
 PropertyAttribute.DontDelete = DONT_DELETE;
+
+
+// A copy of the scope types from runtime.cc.
+ScopeType = { Global: 0,
+              Local: 1,
+              With: 2,
+              Closure: 3 };
 
 
 // Mirror hierarchy:
@@ -364,10 +383,37 @@ Mirror.prototype.isScript = function() {
 
 
 /**
+ * Check whether the mirror reflects a context.
+ * @returns {boolean} True if the mirror reflects a context
+ */
+Mirror.prototype.isContext = function() {
+  return this instanceof ContextMirror;
+}
+
+
+/**
+ * Check whether the mirror reflects a scope.
+ * @returns {boolean} True if the mirror reflects a scope
+ */
+Mirror.prototype.isScope = function() {
+  return this instanceof ScopeMirror;
+}
+
+
+/**
  * Allocate a handle id for this object.
  */
 Mirror.prototype.allocateHandle_ = function() {
   this.handle_ = next_handle_++;
+}
+
+
+/**
+ * Allocate a transient handle id for this object. Transient handles are
+ * negative.
+ */
+Mirror.prototype.allocateTransientHandle_ = function() {
+  this.handle_ = next_transient_handle_--;
 }
 
 
@@ -381,13 +427,19 @@ Mirror.prototype.toText = function() {
  * Base class for all value mirror objects.
  * @param {string} type The type of the mirror
  * @param {value} value The value reflected by this mirror
+ * @param {boolean} transient indicate whether this object is transient with a
+ *    transient handle
  * @constructor
  * @extends Mirror
  */
-function ValueMirror(type, value) {
+function ValueMirror(type, value, transient) {
   Mirror.call(this, type);
   this.value_ = value;
-  this.allocateHandle_();
+  if (!transient) {
+    this.allocateHandle_();
+  } else {
+    this.allocateTransientHandle_();
+  }
 }
 inherits(ValueMirror, Mirror);
 
@@ -516,17 +568,19 @@ StringMirror.prototype.toText = function() {
 /**
  * Mirror object for objects.
  * @param {object} value The object reflected by this mirror
+ * @param {boolean} transient indicate whether this object is transient with a
+ *    transient handle
  * @constructor
  * @extends ValueMirror
  */
-function ObjectMirror(value, type) {
-  ValueMirror.call(this, type || OBJECT_TYPE, value);
+function ObjectMirror(value, type, transient) {
+  ValueMirror.call(this, type || OBJECT_TYPE, value, transient);
 }
 inherits(ObjectMirror, ValueMirror);
 
 
 ObjectMirror.prototype.className = function() {
-  return %ClassOf(this.value_);
+  return %_ClassOf(this.value_);
 };
 
 
@@ -756,6 +810,15 @@ FunctionMirror.prototype.name = function() {
 
 
 /**
+ * Returns the inferred name of the function.
+ * @return {string} Name of the function
+ */
+FunctionMirror.prototype.inferredName = function() {
+  return %FunctionGetInferredName(this.value_);
+};
+
+
+/**
  * Returns the source code for the function.
  * @return {string or undefined} The source code for the function. If the
  *     function is not resolved undefined will be returned.
@@ -857,6 +920,11 @@ UnresolvedFunctionMirror.prototype.name = function() {
 };
 
 
+UnresolvedFunctionMirror.prototype.inferredName = function() {
+  return undefined;
+};
+
+
 UnresolvedFunctionMirror.prototype.propertyNames = function(kind, limit) {
   return [];
 }
@@ -911,7 +979,8 @@ inherits(DateMirror, ObjectMirror);
 
 
 DateMirror.prototype.toText = function() {
-  return DateToISO8601_(this.value_);
+  var s = JSON.stringify(this.value_);
+  return s.substring(1, s.length - 1);  // cut quotes
 }
 
 
@@ -1056,7 +1125,7 @@ PropertyMirror.prototype.isIndexed = function() {
 
 
 PropertyMirror.prototype.value = function() {
-  return MakeMirror(this.value_);
+  return MakeMirror(this.value_, false);
 }
 
 
@@ -1111,7 +1180,7 @@ PropertyMirror.prototype.getter = function() {
   if (this.hasGetter()) {
     return MakeMirror(this.getter_);
   } else {
-    return new UndefinedMirror();
+    return GetUndefinedMirror();
   }
 }
 
@@ -1125,7 +1194,7 @@ PropertyMirror.prototype.setter = function() {
   if (this.hasSetter()) {
     return MakeMirror(this.setter_);
   } else {
-    return new UndefinedMirror();
+    return GetUndefinedMirror();
   }
 }
 
@@ -1270,6 +1339,11 @@ FrameDetails.prototype.localValue = function(index) {
 }
 
 
+FrameDetails.prototype.scopeCount = function() {
+  return %GetScopeCount(this.break_id_, this.frameId());
+}
+
+
 /**
  * Mirror object for stack frames.
  * @param {number} break_id The break id in the VM for which this frame is
@@ -1392,6 +1466,16 @@ FrameMirror.prototype.sourceLineText = function() {
       return location.sourceText();
     }
   }
+};
+
+
+FrameMirror.prototype.scopeCount = function() {
+  return this.details_.scopeCount();
+};
+
+
+FrameMirror.prototype.scope = function(index) {
+  return new ScopeMirror(this, index);
 };
 
 
@@ -1538,6 +1622,70 @@ FrameMirror.prototype.toText = function(opt_locals) {
 }
 
 
+const kScopeDetailsTypeIndex = 0;
+const kScopeDetailsObjectIndex = 1;
+
+function ScopeDetails(frame, index) {
+  this.break_id_ = frame.break_id_;
+  this.details_ = %GetScopeDetails(frame.break_id_,
+                                   frame.details_.frameId(),
+                                   index);
+}
+
+
+ScopeDetails.prototype.type = function() {
+  %CheckExecutionState(this.break_id_);
+  return this.details_[kScopeDetailsTypeIndex];
+}
+
+
+ScopeDetails.prototype.object = function() {
+  %CheckExecutionState(this.break_id_);
+  return this.details_[kScopeDetailsObjectIndex];
+}
+
+
+/**
+ * Mirror object for scope.
+ * @param {FrameMirror} frame The frame this scope is a part of
+ * @param {number} index The scope index in the frame
+ * @constructor
+ * @extends Mirror
+ */
+function ScopeMirror(frame, index) {
+  Mirror.call(this, SCOPE_TYPE);
+  this.frame_index_ = frame.index_;
+  this.scope_index_ = index;
+  this.details_ = new ScopeDetails(frame, index);
+}
+inherits(ScopeMirror, Mirror);
+
+
+ScopeMirror.prototype.frameIndex = function() {
+  return this.frame_index_;
+};
+
+
+ScopeMirror.prototype.scopeIndex = function() {
+  return this.scope_index_;
+};
+
+
+ScopeMirror.prototype.scopeType = function() {
+  return this.details_.type();
+};
+
+
+ScopeMirror.prototype.scopeObject = function() {
+  // For local and closure scopes create a transient mirror as these objects are
+  // created on the fly materializing the local or closure scopes and
+  // therefore will not preserve identity.
+  var transient = this.scopeType() == ScopeType.Local ||
+                  this.scopeType() == ScopeType.Closure;
+  return MakeMirror(this.details_.object(), transient);
+};
+
+
 /**
  * Mirror object for script source.
  * @param {Script} script The script object
@@ -1547,6 +1695,7 @@ FrameMirror.prototype.toText = function(opt_locals) {
 function ScriptMirror(script) {
   Mirror.call(this, SCRIPT_TYPE);
   this.script_ = script;
+  this.context_ = new ContextMirror(script.context_data);
   this.allocateHandle_();
 }
 inherits(ScriptMirror, Mirror);
@@ -1582,8 +1731,18 @@ ScriptMirror.prototype.columnOffset = function() {
 };
 
 
+ScriptMirror.prototype.data = function() {
+  return this.script_.data;
+};
+
+
 ScriptMirror.prototype.scriptType = function() {
   return this.script_.type;
+};
+
+
+ScriptMirror.prototype.compilationType = function() {
+  return this.script_.compilation_type;
 };
 
 
@@ -1603,6 +1762,25 @@ ScriptMirror.prototype.sourceSlice = function (opt_from_line, opt_to_line) {
 }
 
 
+ScriptMirror.prototype.context = function() {
+  return this.context_;
+};
+
+
+ScriptMirror.prototype.evalFromFunction = function() {
+  return MakeMirror(this.script_.eval_from_function);
+};
+
+
+ScriptMirror.prototype.evalFromLocation = function() {
+  var eval_from_function = this.evalFromFunction();
+  if (!eval_from_function.isUndefined()) {
+    var position = this.script_.eval_from_position;
+    return eval_from_function.script().locationFromPosition(position, true);
+  }
+};
+
+
 ScriptMirror.prototype.toText = function() {
   var result = '';
   result += this.name();
@@ -1620,13 +1798,35 @@ ScriptMirror.prototype.toText = function() {
 
 
 /**
+ * Mirror object for context.
+ * @param {Object} data The context data
+ * @constructor
+ * @extends Mirror
+ */
+function ContextMirror(data) {
+  Mirror.call(this, CONTEXT_TYPE);
+  this.data_ = data;
+  this.allocateHandle_();
+}
+inherits(ContextMirror, Mirror);
+
+
+ContextMirror.prototype.data = function() {
+  return this.data_;
+};
+
+
+/**
  * Returns a mirror serializer
  *
  * @param {boolean} details Set to true to include details
+ * @param {Object} options Options comtrolling the serialization
+ *     The following options can be set:
+ *       includeSource: include ths full source of scripts
  * @returns {MirrorSerializer} mirror serializer
  */
-function MakeMirrorSerializer(details) {
-  return new JSONProtocolSerializer(details);
+function MakeMirrorSerializer(details, options) {
+  return new JSONProtocolSerializer(details, options);
 }
 
 
@@ -1636,8 +1836,9 @@ function MakeMirrorSerializer(details) {
  *     serialized
  * @constructor
  */
-function JSONProtocolSerializer(details) {
+function JSONProtocolSerializer(details, options) {
   this.details_ = details;
+  this.options_ = options;
   this.mirrors_ = [ ];
 }
 
@@ -1670,12 +1871,13 @@ JSONProtocolSerializer.prototype.serializeValue = function(mirror) {
 /**
  * Returns a serialization of all the objects referenced.
  *
- * @param {Mirror} mirror The mirror to serialize
- * @returns {String} JSON serialization
+ * @param {Mirror} mirror The mirror to serialize.
+ * @returns {Array.<Object>} Array of the referenced objects converted to
+ *     protcol objects.
  */
 JSONProtocolSerializer.prototype.serializeReferencedObjects = function() {
-  // Collect the JSON serialization of the referenced objects in an array.
-  var content = new Array();
+  // Collect the protocol representation of the referenced objects in an array.
+  var content = [];
   
   // Get the number of referenced objects.
   var count = this.mirrors_.length;
@@ -1684,8 +1886,17 @@ JSONProtocolSerializer.prototype.serializeReferencedObjects = function() {
     content.push(this.serialize_(this.mirrors_[i], false, false));
   }
 
-  var json = ArrayToJSONArray_(content);
-  return json;
+  return content;
+}
+
+
+JSONProtocolSerializer.prototype.includeSource_ = function() {
+  return this.options_ && this.options_.includeSource;
+}
+
+
+JSONProtocolSerializer.prototype.inlineRefs_ = function() {
+  return this.options_ && this.options_.inlineRefs;
 }
 
 
@@ -1702,26 +1913,71 @@ JSONProtocolSerializer.prototype.add_ = function(mirror) {
 }
 
 
+/**
+ * Formats mirror object to protocol reference object with some data that can
+ * be used to display the value in debugger.
+ * @param {Mirror} mirror Mirror to serialize.
+ * @return {Object} Protocol reference object.
+ */
+JSONProtocolSerializer.prototype.serializeReferenceWithDisplayData_ = 
+    function(mirror) {
+  var o = {};
+  o.ref = mirror.handle();
+  o.type = mirror.type();
+  switch (mirror.type()) {
+    case UNDEFINED_TYPE:
+    case NULL_TYPE:
+    case BOOLEAN_TYPE:
+    case NUMBER_TYPE:
+      o.value = mirror.value();
+      break;
+    case STRING_TYPE:
+      // Limit string length.
+      o.value = mirror.toText();
+      break;
+    case FUNCTION_TYPE:
+      o.name = mirror.name();
+      o.inferredName = mirror.inferredName();
+      if (mirror.script()) {
+        o.scriptId = mirror.script().id();
+      }
+      break;
+    case ERROR_TYPE:
+    case REGEXP_TYPE:
+      o.value = mirror.toText();
+      break;
+    case OBJECT_TYPE:
+      o.className = mirror.className();
+      break;
+  }
+  return o;
+};
+
+
 JSONProtocolSerializer.prototype.serialize_ = function(mirror, reference,
                                                        details) {
   // If serializing a reference to a mirror just return the reference and add
   // the mirror to the referenced mirrors.
   if (reference &&
-      (mirror.isValue() || mirror.isScript())) {
-    this.add_(mirror);
-    return '{"ref":' + mirror.handle() + '}';
+      (mirror.isValue() || mirror.isScript() || mirror.isContext())) {
+    if (this.inlineRefs_() && mirror.isValue()) {
+      return this.serializeReferenceWithDisplayData_(mirror);
+    } else {
+      this.add_(mirror);
+      return {'ref' : mirror.handle()};
+    }
   }
   
-  // Collect the JSON property/value pairs in an array.
-  var content = new Array();
+  // Collect the JSON property/value pairs.
+  var content = {};
 
-  // Add the handle for value mirrors.
-  if (mirror.isValue()) {
-    content.push(MakeJSONPair_('handle', NumberToJSON_(mirror.handle())));
+  // Add the mirror handle.
+  if (mirror.isValue() || mirror.isScript() || mirror.isContext()) {
+    content.handle = mirror.handle();
   }
 
   // Always add the type.
-  content.push(MakeJSONPair_('type', StringToJSON_(mirror.type())));
+  content.type = mirror.type();
 
   switch (mirror.type()) {
     case UNDEFINED_TYPE:
@@ -1731,26 +1987,25 @@ JSONProtocolSerializer.prototype.serialize_ = function(mirror, reference,
 
     case BOOLEAN_TYPE:
       // Boolean values are simply represented by their value.
-      content.push(MakeJSONPair_('value', BooleanToJSON_(mirror.value())));
+      content.value = mirror.value();
       break;
 
     case NUMBER_TYPE:
       // Number values are simply represented by their value.
-      content.push(MakeJSONPair_('value', NumberToJSON_(mirror.value())));
+      content.value = NumberToJSON_(mirror.value());
       break;
 
     case STRING_TYPE:
       // String values might have their value cropped to keep down size.
       if (mirror.length() > kMaxProtocolStringLength) {
         var str = mirror.value().substring(0, kMaxProtocolStringLength);
-        content.push(MakeJSONPair_('value', StringToJSON_(str)));
-        content.push(MakeJSONPair_('fromIndex', NumberToJSON_(0)));
-        content.push(MakeJSONPair_('toIndex',
-                                   NumberToJSON_(kMaxProtocolStringLength)));
+        content.value = str;
+        content.fromIndex = 0;
+        content.toIndex = kMaxProtocolStringLength;
       } else {
-        content.push(MakeJSONPair_('value', StringToJSON_(mirror.value())));
+        content.value = mirror.value();
       }
-      content.push(MakeJSONPair_('length', NumberToJSON_(mirror.length())));
+      content.length = mirror.length();
       break;
 
     case OBJECT_TYPE:
@@ -1770,27 +2025,57 @@ JSONProtocolSerializer.prototype.serialize_ = function(mirror, reference,
       this.serializeFrame_(mirror, content);
       break;
 
+    case SCOPE_TYPE:
+      // Add object representation.
+      this.serializeScope_(mirror, content);
+      break;
+
     case SCRIPT_TYPE:
-      // Script is represented by name and source attributes.
+      // Script is represented by id, name and source attributes.
       if (mirror.name()) {
-        content.push(MakeJSONPair_('name', StringToJSON_(mirror.name())));
+        content.name = mirror.name();
       }
-      content.push(MakeJSONPair_('lineOffset',
-                                 NumberToJSON_(mirror.lineOffset())));
-      content.push(MakeJSONPair_('columnOffset',
-                                 NumberToJSON_(mirror.columnOffset())));
-      content.push(MakeJSONPair_('lineCount',
-                                 NumberToJSON_(mirror.lineCount())));
-      content.push(MakeJSONPair_('scriptType',
-                                 NumberToJSON_(mirror.scriptType())));
+      content.id = mirror.id();
+      content.lineOffset = mirror.lineOffset();
+      content.columnOffset = mirror.columnOffset();
+      content.lineCount = mirror.lineCount();
+      if (mirror.data()) {
+        content.data = mirror.data();
+      }
+      if (this.includeSource_()) {
+        content.source = mirror.source();
+      } else {
+        var sourceStart = mirror.source().substring(0, 80);
+        content.sourceStart = sourceStart;
+      }
+      content.sourceLength = mirror.source().length;
+      content.scriptType = mirror.scriptType();
+      content.compilationType = mirror.compilationType();
+      // For compilation type eval emit information on the script from which
+      // eval was called if a script is present.
+      if (mirror.compilationType() == 1 &&
+          mirror.evalFromFunction().script()) {
+        content.evalFromScript =
+            this.serializeReference(mirror.evalFromFunction().script());
+        var evalFromLocation = mirror.evalFromLocation()
+        content.evalFromLocation = { line: evalFromLocation.line,
+                                     column: evalFromLocation.column}
+      }
+      if (mirror.context()) {
+        content.context = this.serializeReference(mirror.context());
+      }
+      break;
+
+    case CONTEXT_TYPE:
+      content.data = mirror.data();
       break;
   }
 
   // Always add the text representation.
-  content.push(MakeJSONPair_('text', StringToJSON_(mirror.toText())));
+  content.text = mirror.toText();
   
   // Create and return the JSON string.
-  return ArrayToJSONObject_(content);
+  return content;
 }
 
 
@@ -1808,40 +2093,40 @@ JSONProtocolSerializer.prototype.serialize_ = function(mirror, reference,
 JSONProtocolSerializer.prototype.serializeObject_ = function(mirror, content,
                                                              details) {
   // Add general object properties.
-  content.push(MakeJSONPair_('className',
-                             StringToJSON_(mirror.className())));
-  content.push(MakeJSONPair_('constructorFunction',
-      this.serializeReference(mirror.constructorFunction())));
-  content.push(MakeJSONPair_('protoObject',
-      this.serializeReference(mirror.protoObject())));
-  content.push(MakeJSONPair_('prototypeObject',
-      this.serializeReference(mirror.prototypeObject())));
+  content.className = mirror.className();
+  content.constructorFunction =
+      this.serializeReference(mirror.constructorFunction());
+  content.protoObject = this.serializeReference(mirror.protoObject());
+  content.prototypeObject = this.serializeReference(mirror.prototypeObject());
 
   // Add flags to indicate whether there are interceptors.
   if (mirror.hasNamedInterceptor()) {
-    content.push(MakeJSONPair_('namedInterceptor', BooleanToJSON_(true)));
+    content.namedInterceptor = true;
   }
   if (mirror.hasIndexedInterceptor()) {
-    content.push(MakeJSONPair_('indexedInterceptor', BooleanToJSON_(true)));
+    content.indexedInterceptor = true;
   }
   
   // Add function specific properties.
   if (mirror.isFunction()) {
     // Add function specific properties.
-    content.push(MakeJSONPair_('name', StringToJSON_(mirror.name())));
-    content.push(MakeJSONPair_('resolved', BooleanToJSON_(mirror.resolved())));
+    content.name = mirror.name();
+    if (!IS_UNDEFINED(mirror.inferredName())) {
+      content.inferredName = mirror.inferredName();
+    }
+    content.resolved = mirror.resolved();
     if (mirror.resolved()) {
-      content.push(MakeJSONPair_('source', StringToJSON_(mirror.source())));
+      content.source = mirror.source();
     }
     if (mirror.script()) {
-      content.push(MakeJSONPair_('script', this.serializeReference(mirror.script())));
+      content.script = this.serializeReference(mirror.script());
     }
   }
 
   // Add date specific properties.
   if (mirror.isDate()) {
     // Add date specific properties.
-    content.push(MakeJSONPair_('value', DateToJSON_(mirror.value())));
+    content.value = mirror.value();
   }
 
   // Add actual properties - named properties followed by indexed properties.
@@ -1849,20 +2134,20 @@ JSONProtocolSerializer.prototype.serializeObject_ = function(mirror, content,
   var propertyIndexes = mirror.propertyNames(PropertyKind.Indexed);
   var p = new Array(propertyNames.length + propertyIndexes.length);
   for (var i = 0; i < propertyNames.length; i++) {
-    var property_mirror = mirror.property(propertyNames[i]);
-    p[i] = this.serializeProperty_(property_mirror);
+    var propertyMirror = mirror.property(propertyNames[i]);
+    p[i] = this.serializeProperty_(propertyMirror);
     if (details) {
-      this.add_(property_mirror.value());
+      this.add_(propertyMirror.value());
     }
   }
   for (var i = 0; i < propertyIndexes.length; i++) {
-    var property_mirror = mirror.property(propertyIndexes[i]);
-    p[propertyNames.length + i] = this.serializeProperty_(property_mirror);
+    var propertyMirror = mirror.property(propertyIndexes[i]);
+    p[propertyNames.length + i] = this.serializeProperty_(propertyMirror);
     if (details) {
-      this.add_(property_mirror.value());
+      this.add_(propertyMirror.value());
     }
   }
-  content.push(MakeJSONPair_('properties', ArrayToJSONArray_(p)));
+  content.properties = p;
 }
 
 
@@ -1882,202 +2167,112 @@ JSONProtocolSerializer.prototype.serializeObject_ = function(mirror, content,
  *   {"name":"hello","ref":1}
  *   {"name":"length","attributes":7,"propertyType":3,"ref":2}
  *
- * @param {PropertyMirror} property_mirror The property to serialize
- * @returns {String} JSON serialization
+ * @param {PropertyMirror} propertyMirror The property to serialize.
+ * @returns {Object} Protocol object representing the property.
  */
-JSONProtocolSerializer.prototype.serializeProperty_ = function(property_mirror) {
-  var builder = new builtins.StringBuilder();
-  builder.add('{"name":');
-  builder.add(StringToJSON_(property_mirror.name()));
-  if (property_mirror.attributes() != PropertyAttribute.None) {
-    builder.add(',"attributes":');
-    builder.add(NumberToJSON_(property_mirror.attributes()));
+JSONProtocolSerializer.prototype.serializeProperty_ = function(propertyMirror) {
+  var result = {};
+  
+  result.name = propertyMirror.name();
+  var propertyValue = propertyMirror.value();
+  if (this.inlineRefs_() && propertyValue.isValue()) {
+    result.value = this.serializeReferenceWithDisplayData_(propertyValue);
+  } else {
+    if (propertyMirror.attributes() != PropertyAttribute.None) {
+      result.attributes = propertyMirror.attributes();
+    }
+    if (propertyMirror.propertyType() != PropertyType.Normal) {
+      result.propertyType = propertyMirror.propertyType();
+    }
+    result.ref = propertyValue.handle();
   }
-  if (property_mirror.propertyType() != PropertyType.Normal) {
-    builder.add(',"propertyType":');
-    builder.add(NumberToJSON_(property_mirror.propertyType()));
-  }
-  builder.add(',"ref":');
-  builder.add(NumberToJSON_(property_mirror.value().handle()));
-  builder.add('}');
-  return builder.generate();
+  return result;
 }
 
 
 JSONProtocolSerializer.prototype.serializeFrame_ = function(mirror, content) {
-  content.push(MakeJSONPair_('index', NumberToJSON_(mirror.index())));
-  content.push(MakeJSONPair_('receiver',
-                             this.serializeReference(mirror.receiver())));
-  content.push(MakeJSONPair_('func', this.serializeReference(mirror.func())));
-  content.push(MakeJSONPair_('constructCall',
-                             BooleanToJSON_(mirror.isConstructCall())));
-  content.push(MakeJSONPair_('debuggerFrame',
-                             BooleanToJSON_(mirror.isDebuggerFrame())));
+  content.index = mirror.index();
+  content.receiver = this.serializeReference(mirror.receiver());
+  var func = mirror.func();
+  content.func = this.serializeReference(func);
+  if (func.script()) {
+    content.script = this.serializeReference(func.script());
+  }
+  content.constructCall = mirror.isConstructCall();
+  content.debuggerFrame = mirror.isDebuggerFrame();
   var x = new Array(mirror.argumentCount());
   for (var i = 0; i < mirror.argumentCount(); i++) {
-    arg = new Array();
+    var arg = {};
     var argument_name = mirror.argumentName(i)
     if (argument_name) {
-      arg.push(MakeJSONPair_('name', StringToJSON_(argument_name)));
+      arg.name = argument_name;
     }
-    arg.push(MakeJSONPair_('value',
-                           this.serializeReference(mirror.argumentValue(i))));
-    x[i] = ArrayToJSONObject_(arg);
+    arg.value = this.serializeReference(mirror.argumentValue(i));
+    x[i] = arg;
   }
-  content.push(MakeJSONPair_('arguments', ArrayToJSONArray_(x)));
+  content.arguments = x;
   var x = new Array(mirror.localCount());
   for (var i = 0; i < mirror.localCount(); i++) {
-    var name = MakeJSONPair_('name', StringToJSON_(mirror.localName(i)));
-    var value = MakeJSONPair_('value',
-                              this.serializeReference(mirror.localValue(i)));
-    x[i] = '{' + name + ',' + value + '}';
+    var local = {};
+    local.name = mirror.localName(i);
+    local.value = this.serializeReference(mirror.localValue(i));
+    x[i] = local;
   }
-  content.push(MakeJSONPair_('locals', ArrayToJSONArray_(x)));
-  content.push(MakeJSONPair_('position',
-                             NumberToJSON_(mirror.sourcePosition())));
+  content.locals = x;
+  content.position = mirror.sourcePosition();
   var line = mirror.sourceLine();
   if (!IS_UNDEFINED(line)) {
-    content.push(MakeJSONPair_('line', NumberToJSON_(line)));
+    content.line = line;
   }
   var column = mirror.sourceColumn();
   if (!IS_UNDEFINED(column)) {
-    content.push(MakeJSONPair_('column', NumberToJSON_(column)));
+    content.column = column;
   }
   var source_line_text = mirror.sourceLineText();
   if (!IS_UNDEFINED(source_line_text)) {
-    content.push(MakeJSONPair_('sourceLineText',
-                               StringToJSON_(source_line_text)));
+    content.sourceLineText = source_line_text;
+  }
+  
+  content.scopes = [];
+  for (var i = 0; i < mirror.scopeCount(); i++) {
+    var scope = mirror.scope(i);
+    content.scopes.push({
+      type: scope.scopeType(),
+      index: i
+    });
   }
 }
 
 
-function MakeJSONPair_(name, value) {
-  return '"' + name + '":' + value;
-}
-
-
-function ArrayToJSONObject_(content) {
-  return '{' + content.join(',') + '}';
-}
-
-
-function ArrayToJSONArray_(content) {
-  return '[' + content.join(',') + ']';
-}
-
-
-function BooleanToJSON_(value) {
-  return String(value); 
+JSONProtocolSerializer.prototype.serializeScope_ = function(mirror, content) {
+  content.index = mirror.scopeIndex();
+  content.frameIndex = mirror.frameIndex();
+  content.type = mirror.scopeType();
+  content.object = this.inlineRefs_() ?
+                   this.serializeValue(mirror.scopeObject()) :
+                   this.serializeReference(mirror.scopeObject());
 }
 
 
 /**
- * Convert a number to a JSON string value. For all finite numbers the number
- * literal representation is used. For non finite numbers NaN, Infinite and
+ * Convert a number to a protocol value. For all finite numbers the number
+ * itself is returned. For non finite numbers NaN, Infinite and
  * -Infinite the string representation "NaN", "Infinite" or "-Infinite"
- * (including the quotes) is returned.
+ * (not including the quotes) is returned.
  *
- * @param {number} value The number value to convert to a JSON value
- * @returns {String} JSON value
+ * @param {number} value The number value to convert to a protocol value.
+ * @returns {number|string} Protocol value.
  */
 function NumberToJSON_(value) {
   if (isNaN(value)) {
-    return '"NaN"';
+    return 'NaN';
   }
   if (!isFinite(value)) {
     if (value > 0) {
-      return '"Infinity"';
+      return 'Infinity';
     } else {
-      return '"-Infinity"';
+      return '-Infinity';
     }
   }
-  return String(value); 
-}
-
-
-// Mapping of some control characters to avoid the \uXXXX syntax for most
-// commonly used control cahracters.
-const ctrlCharMap_ = {
-  '\b': '\\b',
-  '\t': '\\t',
-  '\n': '\\n',
-  '\f': '\\f',
-  '\r': '\\r',
-  '"' : '\\"',
-  '\\': '\\\\'
-};
-
-
-// Regular expression testing for ", \ and control characters (0x00 - 0x1F).
-const ctrlCharTest_ = new RegExp('["\\\\\x00-\x1F]');
-
-
-// Regular expression matching ", \ and control characters (0x00 - 0x1F)
-// globally.
-const ctrlCharMatch_ = new RegExp('["\\\\\x00-\x1F]', 'g');
-
-
-/**
- * Convert a String to its JSON representation (see http://www.json.org/). To
- * avoid depending on the String object this method calls the functions in
- * string.js directly and not through the value.
- * @param {String} value The String value to format as JSON
- * @return {string} JSON formatted String value
- */
-function StringToJSON_(value) {
-  // Check for" , \ and control characters (0x00 - 0x1F). No need to call
-  // RegExpTest as ctrlchar is constructed using RegExp.
-  if (ctrlCharTest_.test(value)) {
-    // Replace ", \ and control characters (0x00 - 0x1F).
-    return '"' +
-      value.replace(ctrlCharMatch_, function (char) {
-        // Use charmap if possible.
-        var mapped = ctrlCharMap_[char];
-        if (mapped) return mapped;
-        mapped = char.charCodeAt();
-        // Convert control character to unicode escape sequence.
-        return '\\u00' +
-          %NumberToRadixString(Math.floor(mapped / 16), 16) +
-          %NumberToRadixString(mapped % 16, 16);
-      })
-    + '"';
-  }
-
-  // Simple string with no special characters.
-  return '"' + value + '"';
-}
-
-
-/**
- * Convert a Date to ISO 8601 format. To avoid depending on the Date object
- * this method calls the functions in date.js directly and not through the
- * value.
- * @param {Date} value The Date value to format as JSON
- * @return {string} JSON formatted Date value
- */
-function DateToISO8601_(value) {
-  function f(n) {
-    return n < 10 ? '0' + n : n;
-  }
-  function g(n) {
-    return n < 10 ? '00' + n : n < 100 ? '0' + n : n;
-  }
-  return builtins.GetUTCFullYearFrom(value)         + '-' +
-          f(builtins.GetUTCMonthFrom(value) + 1)    + '-' +
-          f(builtins.GetUTCDateFrom(value))         + 'T' +
-          f(builtins.GetUTCHoursFrom(value))        + ':' +
-          f(builtins.GetUTCMinutesFrom(value))      + ':' +
-          f(builtins.GetUTCSecondsFrom(value))      + '.' +
-          g(builtins.GetUTCMillisecondsFrom(value)) + 'Z';
-}
-
-/**
- * Convert a Date to ISO 8601 format. To avoid depending on the Date object
- * this method calls the functions in date.js directly and not through the
- * value.
- * @param {Date} value The Date value to format as JSON
- * @return {string} JSON formatted Date value
- */
-function DateToJSON_(value) {
-  return '"' + DateToISO8601_(value) + '"';
+  return value; 
 }
