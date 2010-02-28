@@ -41,6 +41,7 @@ class UTF8Buffer {
   ~UTF8Buffer();
 
   void AddChar(uc32 c) {
+    ASSERT_NOT_NULL(data_);
     if (cursor_ <= limit_ &&
         static_cast<unsigned>(c) <= unibrow::Utf8::kMaxOneByteChar) {
       *cursor_++ = static_cast<char>(c);
@@ -49,17 +50,30 @@ class UTF8Buffer {
     }
   }
 
-  void Reset() { cursor_ = data_; }
-  int pos() const { return cursor_ - data_; }
+  void Reset() {
+    if (data_ == NULL) {
+      data_ = NewArray<char>(kInitialCapacity);
+      limit_ = ComputeLimit(data_, kInitialCapacity);
+    }
+    cursor_ = data_;
+  }
+
+  int pos() const {
+    ASSERT_NOT_NULL(data_);
+    return static_cast<int>(cursor_ - data_);
+  }
+
   char* data() const { return data_; }
 
  private:
+  static const int kInitialCapacity = 256;
   char* data_;
   char* cursor_;
   char* limit_;
 
   int Capacity() const {
-    return (limit_ - data_) + unibrow::Utf8::kMaxEncodedSize;
+    ASSERT_NOT_NULL(data_);
+    return static_cast<int>(limit_ - data_) + unibrow::Utf8::kMaxEncodedSize;
   }
 
   static char* ComputeLimit(char* data, int capacity) {
@@ -123,18 +137,137 @@ class TwoByteStringUTF16Buffer: public UTF16Buffer {
 };
 
 
+class KeywordMatcher {
+//  Incrementally recognize keywords.
+//
+//  Recognized keywords:
+//      break case catch const* continue debugger* default delete do else
+//      finally false for function if in instanceof native* new null
+//      return switch this throw true try typeof var void while with
+//
+//  *: Actually "future reserved keywords". These are the only ones we
+//     recognized, the remaining are allowed as identifiers.
+ public:
+  KeywordMatcher() : state_(INITIAL), token_(Token::IDENTIFIER) {}
+
+  Token::Value token() { return token_; }
+
+  inline void AddChar(uc32 input) {
+    if (state_ != UNMATCHABLE) {
+      Step(input);
+    }
+  }
+
+  void Fail() {
+    token_ = Token::IDENTIFIER;
+    state_ = UNMATCHABLE;
+  }
+
+ private:
+  enum State {
+    UNMATCHABLE,
+    INITIAL,
+    KEYWORD_PREFIX,
+    KEYWORD_MATCHED,
+    C,
+    CA,
+    CO,
+    CON,
+    D,
+    DE,
+    F,
+    I,
+    IN,
+    N,
+    T,
+    TH,
+    TR,
+    V,
+    W
+  };
+
+  struct FirstState {
+    const char* keyword;
+    State state;
+    Token::Value token;
+  };
+
+  // Range of possible first characters of a keyword.
+  static const unsigned int kFirstCharRangeMin = 'b';
+  static const unsigned int kFirstCharRangeMax = 'w';
+  static const unsigned int kFirstCharRangeLength =
+      kFirstCharRangeMax - kFirstCharRangeMin + 1;
+  // State map for first keyword character range.
+  static FirstState first_states_[kFirstCharRangeLength];
+
+  // Current state.
+  State state_;
+  // Token for currently added characters.
+  Token::Value token_;
+
+  // Matching a specific keyword string (there is only one possible valid
+  // keyword with the current prefix).
+  const char* keyword_;
+  int counter_;
+  Token::Value keyword_token_;
+
+  // If input equals keyword's character at position, continue matching keyword
+  // from that position.
+  inline bool MatchKeywordStart(uc32 input,
+                                const char* keyword,
+                                int position,
+                                Token::Value token_if_match) {
+    if (input == keyword[position]) {
+      state_ = KEYWORD_PREFIX;
+      this->keyword_ = keyword;
+      this->counter_ = position + 1;
+      this->keyword_token_ = token_if_match;
+      return true;
+    }
+    return false;
+  }
+
+  // If input equals match character, transition to new state and return true.
+  inline bool MatchState(uc32 input, char match, State new_state) {
+    if (input == match) {
+      state_ = new_state;
+      return true;
+    }
+    return false;
+  }
+
+  inline bool MatchKeyword(uc32 input,
+                           char match,
+                           State new_state,
+                           Token::Value keyword_token) {
+    if (input == match) {  // Matched "do".
+      state_ = new_state;
+      token_ = keyword_token;
+      return true;
+    }
+    return false;
+  }
+
+  void Step(uc32 input);
+};
+
+
+enum ParserMode { PARSE, PREPARSE };
+enum ParserLanguage { JAVASCRIPT, JSON };
+
+
 class Scanner {
  public:
-
   typedef unibrow::Utf8InputBuffer<1024> Utf8Decoder;
 
   // Construction
-  explicit Scanner(bool is_pre_parsing);
+  explicit Scanner(ParserMode parse_mode);
 
   // Initialize the Scanner to scan source:
   void Init(Handle<String> source,
             unibrow::CharacterStream* stream,
-            int position);
+            int position,
+            ParserLanguage language);
 
   // Returns the next token.
   Token::Value Next();
@@ -163,26 +296,30 @@ class Scanner {
   // token returned by Next()). The string is 0-terminated and in
   // UTF-8 format; they may contain 0-characters. Literal strings are
   // collected for identifiers, strings, and numbers.
+  // These functions only give the correct result if the literal
+  // was scanned between calls to StartLiteral() and TerminateLiteral().
   const char* literal_string() const {
-    return &literals_.data()[current_.literal_pos];
+    return current_.literal_buffer->data();
   }
   int literal_length() const {
-    return current_.literal_end - current_.literal_pos;
-  }
-
-  Vector<const char> next_literal() const {
-    return Vector<const char>(next_literal_string(), next_literal_length());
+    // Excluding terminal '\0' added by TerminateLiteral().
+    return current_.literal_buffer->pos() - 1;
   }
 
   // Returns the literal string for the next token (the token that
   // would be returned if Next() were called).
   const char* next_literal_string() const {
-    return &literals_.data()[next_.literal_pos];
+    return next_.literal_buffer->data();
   }
   // Returns the length of the next token (that would be returned if
   // Next() were called).
   int next_literal_length() const {
-    return next_.literal_end - next_.literal_pos;
+    return next_.literal_buffer->pos() - 1;
+  }
+
+  Vector<const char> next_literal() const {
+    return Vector<const char>(next_literal_string(),
+                              next_literal_length());
   }
 
   // Scans the input as a regular expression pattern, previous
@@ -224,7 +361,8 @@ class Scanner {
 
   // Buffer to hold literal values (identifiers, strings, numbers)
   // using 0-terminated UTF-8 encoding.
-  UTF8Buffer literals_;
+  UTF8Buffer literal_buffer_1_;
+  UTF8Buffer literal_buffer_2_;
 
   bool stack_overflow_;
   static StaticResource<Utf8Decoder> utf8_decoder_;
@@ -236,13 +374,14 @@ class Scanner {
   struct TokenDesc {
     Token::Value token;
     Location location;
-    int literal_pos, literal_end;
+    UTF8Buffer* literal_buffer;
   };
 
   TokenDesc current_;  // desc for current token (as returned by Next())
   TokenDesc next_;     // desc for next token (one token look-ahead)
   bool has_line_terminator_before_next_;
   bool is_pre_parsing_;
+  bool is_parsing_json_;
 
   // Literal buffer support
   void StartLiteral();
@@ -257,14 +396,57 @@ class Scanner {
     c0_ = ch;
   }
 
-  bool SkipWhiteSpace();
+  bool SkipWhiteSpace() {
+    if (is_parsing_json_) {
+      return SkipJsonWhiteSpace();
+    } else {
+      return SkipJavaScriptWhiteSpace();
+    }
+  }
+  bool SkipJavaScriptWhiteSpace();
+  bool SkipJsonWhiteSpace();
   Token::Value SkipSingleLineComment();
   Token::Value SkipMultiLineComment();
 
   inline Token::Value Select(Token::Value tok);
   inline Token::Value Select(uc32 next, Token::Value then, Token::Value else_);
 
-  void Scan();
+  inline void Scan() {
+    if (is_parsing_json_) {
+      ScanJson();
+    } else {
+      ScanJavaScript();
+    }
+  }
+
+  // Scans a single JavaScript token.
+  void ScanJavaScript();
+
+  // Scan a single JSON token. The JSON lexical grammar is specified in the
+  // ECMAScript 5 standard, section 15.12.1.1.
+  // Recognizes all of the single-character tokens directly, or calls a function
+  // to scan a number, string or identifier literal.
+  // The only allowed whitespace characters between tokens are tab,
+  // carrige-return, newline and space.
+  void ScanJson();
+
+  // A JSON number (production JSONNumber) is a subset of the valid JavaScript
+  // decimal number literals.
+  // It includes an optional minus sign, must have at least one
+  // digit before and after a decimal point, may not have prefixed zeros (unless
+  // the integer part is zero), and may include an exponent part (e.g., "e-10").
+  // Hexadecimal and octal numbers are not allowed.
+  Token::Value ScanJsonNumber();
+  // A JSON string (production JSONString) is subset of valid JavaScript string
+  // literals. The string must only be double-quoted (not single-quoted), and
+  // the only allowed backslash-escapes are ", /, \, b, f, n, r, t and
+  // four-digit hex escapes (uXXXX). Any other use of backslashes is invalid.
+  Token::Value ScanJsonString();
+  // Used to recognizes one of the literals "true", "false", or "null". These
+  // are the only valid JSON identifiers (productions JSONBooleanLiteral,
+  // JSONNullLiteral).
+  Token::Value ScanJsonIdentifier(const char* text, Token::Value token);
+
   void ScanDecimalDigits();
   Token::Value ScanNumber(bool seen_period);
   Token::Value ScanIdentifier();

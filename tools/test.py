@@ -326,6 +326,7 @@ class CommandOutput(object):
     self.timed_out = timed_out
     self.stdout = stdout
     self.stderr = stderr
+    self.failed = None
 
 
 class TestCase(object):
@@ -333,7 +334,6 @@ class TestCase(object):
   def __init__(self, context, path):
     self.path = path
     self.context = context
-    self.failed = None
     self.duration = None
 
   def IsNegative(self):
@@ -343,9 +343,9 @@ class TestCase(object):
     return cmp(other.duration, self.duration)
 
   def DidFail(self, output):
-    if self.failed is None:
-      self.failed = self.IsFailureOutput(output)
-    return self.failed
+    if output.failed is None:
+      output.failed = self.IsFailureOutput(output)
+    return output.failed
 
   def IsFailureOutput(self, output):
     return output.exit_code != 0
@@ -359,8 +359,19 @@ class TestCase(object):
     self.Cleanup()
     return TestOutput(self, full_command, output)
 
+  def BeforeRun(self):
+    pass
+
+  def AfterRun(self):
+    pass
+
   def Run(self):
-    return self.RunCommand(self.GetCommand())
+    self.BeforeRun()
+    try:
+      result = self.RunCommand(self.GetCommand())
+    finally:
+      self.AfterRun()
+    return result
 
   def Cleanup(self):
     return
@@ -628,10 +639,7 @@ class Context(object):
       name = name + '.exe'
     return name
 
-def RunTestCases(all_cases, progress, tasks):
-  def DoSkip(case):
-    return SKIP in c.outcomes or SLOW in c.outcomes
-  cases_to_run = [ c for c in all_cases if not DoSkip(c) ]
+def RunTestCases(cases_to_run, progress, tasks):
   progress = PROGRESS_INDICATORS[progress](cases_to_run)
   return progress.Run(tasks)
 
@@ -1084,6 +1092,8 @@ def BuildOptions():
       choices=PROGRESS_INDICATORS.keys(), default="mono")
   result.add_option("--no-build", help="Don't build requirements",
       default=False, action="store_true")
+  result.add_option("--build-only", help="Only build requirements, don't run the tests",
+      default=False, action="store_true")
   result.add_option("--report", help="Print a summary of the tests to be run",
       default=False, action="store_true")
   result.add_option("-s", "--suite", help="A test suite",
@@ -1092,6 +1102,8 @@ def BuildOptions():
       default=60, type="int")
   result.add_option("--arch", help='The architecture to run tests for',
       default='none')
+  result.add_option("--snapshot", help="Run the tests with snapshot turned on",
+      default=False, action="store_true")
   result.add_option("--simulator", help="Run tests with architecture simulator",
       default='none')
   result.add_option("--special-command", default=None)
@@ -1137,6 +1149,8 @@ def ProcessOptions(options):
     if options.arch == 'none':
       options.arch = ARCH_GUESS
     options.scons_flags.append("arch=" + options.arch)
+  if options.snapshot:
+    options.scons_flags.append("snapshot=on")
   return True
 
 
@@ -1261,6 +1275,10 @@ def Main():
       if not BuildRequirements(context, reqs, options.mode, options.scons_flags):
         return 1
 
+  # Just return if we are only building the targets for running the tests.
+  if options.build_only:
+    return 0
+  
   # Get status for tests
   sections = [ ]
   defs = { }
@@ -1314,13 +1332,16 @@ def Main():
     PrintReport(all_cases)
 
   result = None
-  if len(all_cases) == 0:
+  def DoSkip(case):
+    return SKIP in case.outcomes or SLOW in case.outcomes
+  cases_to_run = [ c for c in all_cases if not DoSkip(c) ]
+  if len(cases_to_run) == 0:
     print "No tests to run."
     return 0
   else:
     try:
       start = time.time()
-      if RunTestCases(all_cases, options.progress, options.j):
+      if RunTestCases(cases_to_run, options.progress, options.j):
         result = 0
       else:
         result = 1
@@ -1334,7 +1355,7 @@ def Main():
     # test output.
     print
     sys.stderr.write("--- Total time: %s ---\n" % FormatTime(duration))
-    timed_tests = [ t.case for t in all_cases if not t.case.duration is None ]
+    timed_tests = [ t.case for t in cases_to_run if not t.case.duration is None ]
     timed_tests.sort(lambda a, b: a.CompareTime(b))
     index = 1
     for entry in timed_tests[:20]:

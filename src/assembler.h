@@ -119,6 +119,7 @@ class RelocInfo BASE_EMBEDDED {
     // Please note the order is important (see IsCodeTarget, IsGCRelocMode).
     CONSTRUCT_CALL,  // code target that is a call to a JavaScript constructor.
     CODE_TARGET_CONTEXT,  // code target used for contextual loads.
+    DEBUG_BREAK,
     CODE_TARGET,         // code target which is not any of the above.
     EMBEDDED_OBJECT,
     EMBEDDED_STRING,
@@ -191,6 +192,7 @@ class RelocInfo BASE_EMBEDDED {
   INLINE(Address target_address());
   INLINE(void set_target_address(Address target));
   INLINE(Object* target_object());
+  INLINE(Handle<Object> target_object_handle(Assembler* origin));
   INLINE(Object** target_object_address());
   INLINE(void set_target_object(Object* target));
 
@@ -216,10 +218,10 @@ class RelocInfo BASE_EMBEDDED {
 
   // Patch the code with a call.
   void PatchCodeWithCall(Address target, int guard_bytes);
-  // Check whether the current instruction is currently a call
-  // sequence (whether naturally or a return sequence overwritten
-  // to enter the debugger).
-  INLINE(bool IsCallInstruction());
+
+  // Check whether this return sequence has been patched
+  // with a call to the debugger.
+  INLINE(bool IsPatchedReturnSequence());
 
 #ifdef ENABLE_DISASSEMBLER
   // Printing
@@ -372,6 +374,8 @@ class ExternalReference BASE_EMBEDDED {
  public:
   explicit ExternalReference(Builtins::CFunctionId id);
 
+  explicit ExternalReference(ApiFunction* ptr);
+
   explicit ExternalReference(Builtins::Name name);
 
   explicit ExternalReference(Runtime::FunctionId id);
@@ -395,8 +399,12 @@ class ExternalReference BASE_EMBEDDED {
   // ExternalReferenceTable in serialize.cc manually.
 
   static ExternalReference perform_gc_function();
-  static ExternalReference builtin_passed_function();
   static ExternalReference random_positive_smi_function();
+  static ExternalReference transcendental_cache_array_address();
+
+  // Static data in the keyed lookup cache.
+  static ExternalReference keyed_lookup_cache_keys();
+  static ExternalReference keyed_lookup_cache_field_offsets();
 
   // Static variable Factory::the_hole_value.location()
   static ExternalReference the_hole_value_location();
@@ -405,10 +413,18 @@ class ExternalReference BASE_EMBEDDED {
   static ExternalReference roots_address();
 
   // Static variable StackGuard::address_of_jslimit()
-  static ExternalReference address_of_stack_guard_limit();
+  static ExternalReference address_of_stack_limit();
+
+  // Static variable StackGuard::address_of_real_jslimit()
+  static ExternalReference address_of_real_stack_limit();
 
   // Static variable RegExpStack::limit_address()
   static ExternalReference address_of_regexp_stack_limit();
+
+  // Static variables for RegExp.
+  static ExternalReference address_of_static_offsets_vector();
+  static ExternalReference address_of_regexp_stack_memory_address();
+  static ExternalReference address_of_regexp_stack_memory_size();
 
   // Static variable Heap::NewSpaceStart()
   static ExternalReference new_space_start();
@@ -421,6 +437,12 @@ class ExternalReference BASE_EMBEDDED {
   static ExternalReference double_fp_operation(Token::Value operation);
   static ExternalReference compare_doubles();
 
+  static ExternalReference handle_scope_extensions_address();
+  static ExternalReference handle_scope_next_address();
+  static ExternalReference handle_scope_limit_address();
+
+  static ExternalReference scheduled_exception_address();
+
   Address address() const {return reinterpret_cast<Address>(address_);}
 
 #ifdef ENABLE_DEBUGGER_SUPPORT
@@ -429,6 +451,23 @@ class ExternalReference BASE_EMBEDDED {
 
   // Used to check if single stepping is enabled in generated code.
   static ExternalReference debug_step_in_fp_address();
+#endif
+
+#ifdef V8_NATIVE_REGEXP
+  // C functions called from RegExp generated code.
+
+  // Function NativeRegExpMacroAssembler::CaseInsensitiveCompareUC16()
+  static ExternalReference re_case_insensitive_compare_uc16();
+
+  // Function RegExpMacroAssembler*::CheckStackGuardState()
+  static ExternalReference re_check_stack_guard_state();
+
+  // Function NativeRegExpMacroAssembler::GrowStack()
+  static ExternalReference re_grow_stack();
+
+  // byte NativeRegExpMacroAssembler::word_character_bitmap
+  static ExternalReference re_word_character_map();
+
 #endif
 
   // This lets you register a function that rewrites all external references.
@@ -446,12 +485,16 @@ class ExternalReference BASE_EMBEDDED {
 
   static void* Redirect(void* address, bool fp_return = false) {
     if (redirector_ == NULL) return address;
-    return (*redirector_)(address, fp_return);
+    void* answer = (*redirector_)(address, fp_return);
+    return answer;
   }
 
   static void* Redirect(Address address_arg, bool fp_return = false) {
     void* address = reinterpret_cast<void*>(address_arg);
-    return redirector_ == NULL ? address : (*redirector_)(address, fp_return);
+    void* answer = (redirector_ == NULL) ?
+                   address :
+                   (*redirector_)(address, fp_return);
+    return answer;
   }
 
   void* address_;
@@ -465,8 +508,10 @@ static inline bool is_intn(int x, int n)  {
   return -(1 << (n-1)) <= x && x < (1 << (n-1));
 }
 
-static inline bool is_int24(int x)  { return is_intn(x, 24); }
 static inline bool is_int8(int x)  { return is_intn(x, 8); }
+static inline bool is_int16(int x)  { return is_intn(x, 16); }
+static inline bool is_int18(int x)  { return is_intn(x, 18); }
+static inline bool is_int24(int x)  { return is_intn(x, 24); }
 
 static inline bool is_uintn(int x, int n) {
   return (x & -(1 << n)) == 0;
@@ -478,9 +523,20 @@ static inline bool is_uint4(int x)  { return is_uintn(x, 4); }
 static inline bool is_uint5(int x)  { return is_uintn(x, 5); }
 static inline bool is_uint6(int x)  { return is_uintn(x, 6); }
 static inline bool is_uint8(int x)  { return is_uintn(x, 8); }
+static inline bool is_uint10(int x)  { return is_uintn(x, 10); }
 static inline bool is_uint12(int x)  { return is_uintn(x, 12); }
 static inline bool is_uint16(int x)  { return is_uintn(x, 16); }
 static inline bool is_uint24(int x)  { return is_uintn(x, 24); }
+static inline bool is_uint26(int x)  { return is_uintn(x, 26); }
+static inline bool is_uint28(int x)  { return is_uintn(x, 28); }
+
+static inline int NumberOfBitsSet(uint32_t x) {
+  unsigned int num_bits_set;
+  for (num_bits_set = 0; x; x >>= 1) {
+    num_bits_set += x & 1;
+  }
+  return num_bits_set;
+}
 
 } }  // namespace v8::internal
 

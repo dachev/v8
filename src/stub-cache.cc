@@ -105,7 +105,7 @@ Object* StubCache::ComputeLoadField(String* name,
     if (code->IsFailure()) return code;
     LOG(CodeCreateEvent(Logger::LOAD_IC_TAG, Code::cast(code), name));
     Object* result = receiver->map()->UpdateCodeCache(name, Code::cast(code));
-    if (result->IsFailure()) return code;
+    if (result->IsFailure()) return result;
   }
   return Set(name, receiver->map(), Code::cast(code));
 }
@@ -120,11 +120,11 @@ Object* StubCache::ComputeLoadCallback(String* name,
   Object* code = receiver->map()->FindInCodeCache(name, flags);
   if (code->IsUndefined()) {
     LoadStubCompiler compiler;
-    code = compiler.CompileLoadCallback(receiver, holder, callback, name);
+    code = compiler.CompileLoadCallback(name, receiver, holder, callback);
     if (code->IsFailure()) return code;
     LOG(CodeCreateEvent(Logger::LOAD_IC_TAG, Code::cast(code), name));
     Object* result = receiver->map()->UpdateCodeCache(name, Code::cast(code));
-    if (result->IsFailure()) return code;
+    if (result->IsFailure()) return result;
   }
   return Set(name, receiver->map(), Code::cast(code));
 }
@@ -143,7 +143,7 @@ Object* StubCache::ComputeLoadConstant(String* name,
     if (code->IsFailure()) return code;
     LOG(CodeCreateEvent(Logger::LOAD_IC_TAG, Code::cast(code), name));
     Object* result = receiver->map()->UpdateCodeCache(name, Code::cast(code));
-    if (result->IsFailure()) return code;
+    if (result->IsFailure()) return result;
   }
   return Set(name, receiver->map(), Code::cast(code));
 }
@@ -160,7 +160,7 @@ Object* StubCache::ComputeLoadInterceptor(String* name,
     if (code->IsFailure()) return code;
     LOG(CodeCreateEvent(Logger::LOAD_IC_TAG, Code::cast(code), name));
     Object* result = receiver->map()->UpdateCodeCache(name, Code::cast(code));
-    if (result->IsFailure()) return code;
+    if (result->IsFailure()) return result;
   }
   return Set(name, receiver->map(), Code::cast(code));
 }
@@ -189,7 +189,7 @@ Object* StubCache::ComputeLoadGlobal(String* name,
     if (code->IsFailure()) return code;
     LOG(CodeCreateEvent(Logger::LOAD_IC_TAG, Code::cast(code), name));
     Object* result = receiver->map()->UpdateCodeCache(name, Code::cast(code));
-    if (result->IsFailure()) return code;
+    if (result->IsFailure()) return result;
   }
   return Set(name, receiver->map(), Code::cast(code));
 }
@@ -351,7 +351,7 @@ Object* StubCache::ComputeStoreGlobal(String* name,
     if (code->IsFailure()) return code;
     LOG(CodeCreateEvent(Logger::LOAD_IC_TAG, Code::cast(code), name));
     Object* result = receiver->map()->UpdateCodeCache(name, Code::cast(code));
-    if (result->IsFailure()) return code;
+    if (result->IsFailure()) return result;
   }
   return Set(name, receiver->map(), Code::cast(code));
 }
@@ -484,7 +484,10 @@ Object* StubCache::ComputeCallField(int argc,
   Object* code = map->FindInCodeCache(name, flags);
   if (code->IsUndefined()) {
     CallStubCompiler compiler(argc, in_loop);
-    code = compiler.CompileCallField(object, holder, index, name);
+    code = compiler.CompileCallField(JSObject::cast(object),
+                                     holder,
+                                     index,
+                                     name);
     if (code->IsFailure()) return code;
     ASSERT_EQ(flags, Code::cast(code)->flags());
     LOG(CodeCreateEvent(Logger::CALL_IC_TAG, Code::cast(code), name));
@@ -518,7 +521,9 @@ Object* StubCache::ComputeCallInterceptor(int argc,
   Object* code = map->FindInCodeCache(name, flags);
   if (code->IsUndefined()) {
     CallStubCompiler compiler(argc, NOT_IN_LOOP);
-    code = compiler.CompileCallInterceptor(object, holder, name);
+    code = compiler.CompileCallInterceptor(JSObject::cast(object),
+                                           holder,
+                                           name);
     if (code->IsFailure()) return code;
     ASSERT_EQ(flags, Code::cast(code)->flags());
     LOG(CodeCreateEvent(Logger::CALL_IC_TAG, Code::cast(code), name));
@@ -561,7 +566,7 @@ Object* StubCache::ComputeCallGlobal(int argc,
     ASSERT_EQ(flags, Code::cast(code)->flags());
     LOG(CodeCreateEvent(Logger::CALL_IC_TAG, Code::cast(code), name));
     Object* result = receiver->map()->UpdateCodeCache(name, Code::cast(code));
-    if (result->IsFailure()) return code;
+    if (result->IsFailure()) return result;
   }
   return Set(name, receiver->map(), Code::cast(code));
 }
@@ -735,28 +740,25 @@ Handle<Code> ComputeCallMiss(int argc) {
 
 
 Object* LoadCallbackProperty(Arguments args) {
-  Handle<JSObject> recv = args.at<JSObject>(0);
-  Handle<JSObject> holder = args.at<JSObject>(1);
+  ASSERT(args[0]->IsJSObject());
+  ASSERT(args[1]->IsJSObject());
   AccessorInfo* callback = AccessorInfo::cast(args[2]);
-  Handle<Object> data = args.at<Object>(3);
   Address getter_address = v8::ToCData<Address>(callback->getter());
   v8::AccessorGetter fun = FUNCTION_CAST<v8::AccessorGetter>(getter_address);
   ASSERT(fun != NULL);
-  Handle<String> name = args.at<String>(4);
-  // NOTE: If we can align the structure of an AccessorInfo with the
-  // locations of the arguments to this function maybe we don't have
-  // to explicitly create the structure but can just pass a pointer
-  // into the stack.
-  LOG(ApiNamedPropertyAccess("load", *recv, *name));
-  v8::AccessorInfo info(v8::Utils::ToLocal(recv),
-                        v8::Utils::ToLocal(data),
-                        v8::Utils::ToLocal(holder));
+  CustomArguments custom_args(callback->data(),
+                              JSObject::cast(args[0]),
+                              JSObject::cast(args[1]));
+  v8::AccessorInfo info(custom_args.end());
   HandleScope scope;
   v8::Handle<v8::Value> result;
   {
     // Leaving JavaScript.
     VMState state(EXTERNAL);
-    result = fun(v8::Utils::ToLocal(name), info);
+#ifdef ENABLE_LOGGING_AND_PROFILING
+    state.set_external_callback(getter_address);
+#endif
+    result = fun(v8::Utils::ToLocal(args.at<String>(4)), info);
   }
   RETURN_IF_SCHEDULED_EXCEPTION();
   if (result.IsEmpty()) return Heap::undefined_value();
@@ -765,7 +767,7 @@ Object* LoadCallbackProperty(Arguments args) {
 
 
 Object* StoreCallbackProperty(Arguments args) {
-  Handle<JSObject> recv = args.at<JSObject>(0);
+  JSObject* recv = JSObject::cast(args[0]);
   AccessorInfo* callback = AccessorInfo::cast(args[1]);
   Address setter_address = v8::ToCData<Address>(callback->setter());
   v8::AccessorSetter fun = FUNCTION_CAST<v8::AccessorSetter>(setter_address);
@@ -773,14 +775,15 @@ Object* StoreCallbackProperty(Arguments args) {
   Handle<String> name = args.at<String>(2);
   Handle<Object> value = args.at<Object>(3);
   HandleScope scope;
-  Handle<Object> data(callback->data());
-  LOG(ApiNamedPropertyAccess("store", *recv, *name));
-  v8::AccessorInfo info(v8::Utils::ToLocal(recv),
-                        v8::Utils::ToLocal(data),
-                        v8::Utils::ToLocal(recv));
+  LOG(ApiNamedPropertyAccess("store", recv, *name));
+  CustomArguments custom_args(callback->data(), recv, recv);
+  v8::AccessorInfo info(custom_args.end());
   {
     // Leaving JavaScript.
     VMState state(EXTERNAL);
+#ifdef ENABLE_LOGGING_AND_PROFILING
+    state.set_external_callback(setter_address);
+#endif
     fun(v8::Utils::ToLocal(name), v8::Utils::ToLocal(value), info);
   }
   RETURN_IF_SCHEDULED_EXCEPTION();
@@ -795,11 +798,11 @@ Object* StoreCallbackProperty(Arguments args) {
  * provide any value for the given name.
  */
 Object* LoadPropertyWithInterceptorOnly(Arguments args) {
-  Handle<JSObject> receiver_handle = args.at<JSObject>(0);
-  Handle<JSObject> holder_handle = args.at<JSObject>(1);
+  JSObject* receiver_handle = JSObject::cast(args[0]);
+  JSObject* holder_handle = JSObject::cast(args[1]);
   Handle<String> name_handle = args.at<String>(2);
   Handle<InterceptorInfo> interceptor_info = args.at<InterceptorInfo>(3);
-  Handle<Object> data_handle = args.at<Object>(4);
+  Object* data_handle = args[4];
 
   Address getter_address = v8::ToCData<Address>(interceptor_info->getter());
   v8::NamedPropertyGetter getter =
@@ -808,9 +811,8 @@ Object* LoadPropertyWithInterceptorOnly(Arguments args) {
 
   {
     // Use the interceptor getter.
-    v8::AccessorInfo info(v8::Utils::ToLocal(receiver_handle),
-                          v8::Utils::ToLocal(data_handle),
-                          v8::Utils::ToLocal(holder_handle));
+    CustomArguments args(data_handle, receiver_handle, holder_handle);
+    v8::AccessorInfo info(args.end());
     HandleScope scope;
     v8::Handle<v8::Value> r;
     {
@@ -834,7 +836,7 @@ static Object* ThrowReferenceError(String* name) {
   // can't use either LoadIC or KeyedLoadIC constructors.
   IC ic(IC::NO_EXTRA_FRAME);
   ASSERT(ic.target()->is_load_stub() || ic.target()->is_keyed_load_stub());
-  if (!ic.is_contextual()) return Heap::undefined_value();
+  if (!ic.SlowIsContextual()) return Heap::undefined_value();
 
   // Throw a reference error.
   HandleScope scope;
@@ -861,9 +863,8 @@ static Object* LoadWithInterceptor(Arguments* args,
 
   {
     // Use the interceptor getter.
-    v8::AccessorInfo info(v8::Utils::ToLocal(receiver_handle),
-                          v8::Utils::ToLocal(data_handle),
-                          v8::Utils::ToLocal(holder_handle));
+    CustomArguments args(*data_handle, *receiver_handle, *holder_handle);
+    v8::AccessorInfo info(args.end());
     HandleScope scope;
     v8::Handle<v8::Value> r;
     {
@@ -921,6 +922,13 @@ Object* StoreInterceptorProperty(Arguments args) {
   PropertyAttributes attr = NONE;
   Object* result = recv->SetPropertyWithInterceptor(name, value, attr);
   return result;
+}
+
+
+Object* KeyedLoadPropertyWithInterceptor(Arguments args) {
+  JSObject* receiver = JSObject::cast(args[0]);
+  uint32_t index = Smi::cast(args[1])->value();
+  return receiver->GetElementWithInterceptor(receiver, index);
 }
 
 
@@ -1063,6 +1071,21 @@ Object* StubCompiler::GetCodeWithFlags(Code::Flags flags, String* name) {
 }
 
 
+void StubCompiler::LookupPostInterceptor(JSObject* holder,
+                                         String* name,
+                                         LookupResult* lookup) {
+  holder->LocalLookupRealNamedProperty(name, lookup);
+  if (!lookup->IsProperty()) {
+    lookup->NotFound();
+    Object* proto = holder->GetPrototype();
+    if (proto != Heap::null_value()) {
+      proto->Lookup(name, lookup);
+    }
+  }
+}
+
+
+
 Object* LoadStubCompiler::GetCode(PropertyType type, String* name) {
   Code::Flags flags = Code::ComputeMonomorphicFlags(Code::LOAD_IC, type);
   return GetCodeWithFlags(flags, name);
@@ -1099,9 +1122,14 @@ Object* CallStubCompiler::GetCode(PropertyType type, String* name) {
 
 Object* ConstructStubCompiler::GetCode() {
   Code::Flags flags = Code::ComputeFlags(Code::STUB);
-  return GetCodeWithFlags(flags, "ConstructStub");
+  Object* result = GetCodeWithFlags(flags, "ConstructStub");
+  if (!result->IsFailure()) {
+    Code* code = Code::cast(result);
+    USE(code);
+    LOG(CodeCreateEvent(Logger::STUB_TAG, code, "ConstructStub"));
+  }
+  return result;
 }
-
 
 
 } }  // namespace v8::internal

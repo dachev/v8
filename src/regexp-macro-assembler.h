@@ -61,6 +61,7 @@ class RegExpMacroAssembler {
   // kCheckStackLimit flag to push operations (instead of kNoStackLimitCheck)
   // at least once for every stack_limit() pushes that are executed.
   virtual int stack_limit_slack() = 0;
+  virtual bool CanReadUnaligned();
   virtual void AdvanceCurrentPosition(int by) = 0;  // Signed cp change.
   virtual void AdvanceRegister(int reg, int by) = 0;  // r[reg] += by.
   // Continues execution from the position pushed on the top of the backtrack
@@ -122,8 +123,6 @@ class RegExpMacroAssembler {
   // not have custom support.
   // May clobber the current loaded character.
   virtual bool CheckSpecialCharacterClass(uc16 type,
-                                          int cp_offset,
-                                          bool check_offset,
                                           Label* on_no_match) {
     return false;
   }
@@ -182,6 +181,7 @@ class NativeRegExpMacroAssembler: public RegExpMacroAssembler {
 
   NativeRegExpMacroAssembler();
   virtual ~NativeRegExpMacroAssembler();
+  virtual bool CanReadUnaligned();
 
   static Result Match(Handle<Code> regexp,
                       Handle<String> subject,
@@ -195,17 +195,34 @@ class NativeRegExpMacroAssembler: public RegExpMacroAssembler {
                                         Address byte_offset2,
                                         size_t byte_length);
 
+  // Called from RegExp if the backtrack stack limit is hit.
+  // Tries to expand the stack. Returns the new stack-pointer if
+  // successful, and updates the stack_top address, or returns 0 if unable
+  // to grow the stack.
+  // This function must not trigger a garbage collection.
+  static Address GrowStack(Address stack_pointer, Address* stack_top);
+
   static const byte* StringCharacterPosition(String* subject, int start_index);
+
+  // Byte map of ASCII characters with a 0xff if the character is a word
+  // character (digit, letter or underscore) and 0x00 otherwise.
+  // Used by generated RegExp code.
+  static byte word_character_map[128];
+
+  static Address word_character_map_address() {
+    return &word_character_map[0];
+  }
 
   static Result Execute(Code* code,
                         String* input,
                         int start_offset,
                         const byte* input_start,
                         const byte* input_end,
-                        int* output,
-                        bool at_start);
+                        int* output);
 };
+
 #endif  // V8_NATIVE_REGEXP
+
 } }  // namespace v8::internal
 
 #endif  // V8_REGEXP_MACRO_ASSEMBLER_H_

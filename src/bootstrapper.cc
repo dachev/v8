@@ -36,6 +36,7 @@
 #include "global-handles.h"
 #include "macro-assembler.h"
 #include "natives.h"
+#include "snapshot.h"
 
 namespace v8 {
 namespace internal {
@@ -92,14 +93,41 @@ class SourceCodeCache BASE_EMBEDDED {
 
 static SourceCodeCache natives_cache(Script::TYPE_NATIVE);
 static SourceCodeCache extensions_cache(Script::TYPE_EXTENSION);
+// This is for delete, not delete[].
+static List<char*>* delete_these_non_arrays_on_tear_down = NULL;
+// This is for delete[]
+static List<char*>* delete_these_arrays_on_tear_down = NULL;
+
+
+NativesExternalStringResource::NativesExternalStringResource(const char* source)
+    : data_(source), length_(StrLength(source)) {
+  if (delete_these_non_arrays_on_tear_down == NULL) {
+    delete_these_non_arrays_on_tear_down = new List<char*>(2);
+  }
+  // The resources are small objects and we only make a fixed number of
+  // them, but let's clean them up on exit for neatness.
+  delete_these_non_arrays_on_tear_down->
+      Add(reinterpret_cast<char*>(this));
+}
 
 
 Handle<String> Bootstrapper::NativesSourceLookup(int index) {
   ASSERT(0 <= index && index < Natives::GetBuiltinsCount());
   if (Heap::natives_source_cache()->get(index)->IsUndefined()) {
-    Handle<String> source_code =
-      Factory::NewStringFromAscii(Natives::GetScriptSource(index));
-    Heap::natives_source_cache()->set(index, *source_code);
+    if (!Snapshot::IsEnabled() || FLAG_new_snapshot) {
+      // We can use external strings for the natives.
+      NativesExternalStringResource* resource =
+          new NativesExternalStringResource(
+              Natives::GetScriptSource(index).start());
+      Handle<String> source_code =
+          Factory::NewExternalStringFromAscii(resource);
+      Heap::natives_source_cache()->set(index, *source_code);
+    } else {
+      // Old snapshot code can't cope with external strings at all.
+      Handle<String> source_code =
+        Factory::NewStringFromAscii(Natives::GetScriptSource(index));
+      Heap::natives_source_cache()->set(index, *source_code);
+    }
   }
   Handle<Object> cached_source(Heap::natives_source_cache()->get(index));
   return Handle<String>::cast(cached_source);
@@ -124,128 +152,43 @@ void Bootstrapper::Initialize(bool create_heap_objects) {
 }
 
 
+char* Bootstrapper::AllocateAutoDeletedArray(int bytes) {
+  char* memory = new char[bytes];
+  if (memory != NULL) {
+    if (delete_these_arrays_on_tear_down == NULL) {
+      delete_these_arrays_on_tear_down = new List<char*>(2);
+    }
+    delete_these_arrays_on_tear_down->Add(memory);
+  }
+  return memory;
+}
+
+
 void Bootstrapper::TearDown() {
+  if (delete_these_non_arrays_on_tear_down != NULL) {
+    int len = delete_these_non_arrays_on_tear_down->length();
+    ASSERT(len < 20);  // Don't use this mechanism for unbounded allocations.
+    for (int i = 0; i < len; i++) {
+      delete delete_these_non_arrays_on_tear_down->at(i);
+      delete_these_non_arrays_on_tear_down->at(i) = NULL;
+    }
+    delete delete_these_non_arrays_on_tear_down;
+    delete_these_non_arrays_on_tear_down = NULL;
+  }
+
+  if (delete_these_arrays_on_tear_down != NULL) {
+    int len = delete_these_arrays_on_tear_down->length();
+    ASSERT(len < 1000);  // Don't use this mechanism for unbounded allocations.
+    for (int i = 0; i < len; i++) {
+      delete[] delete_these_arrays_on_tear_down->at(i);
+      delete_these_arrays_on_tear_down->at(i) = NULL;
+    }
+    delete delete_these_arrays_on_tear_down;
+    delete_these_arrays_on_tear_down = NULL;
+  }
+
   natives_cache.Initialize(false);  // Yes, symmetrical
   extensions_cache.Initialize(false);
-}
-
-
-// Pending fixups are code positions that refer to builtin code
-// objects that were not available at the time the code was generated.
-// The pending list is processed whenever an environment has been
-// created.
-class PendingFixups : public AllStatic {
- public:
-  static void Add(Code* code, MacroAssembler* masm);
-  static bool Process(Handle<JSBuiltinsObject> builtins);
-
-  static void Iterate(ObjectVisitor* v);
-
- private:
-  static List<Object*> code_;
-  static List<const char*> name_;
-  static List<int> pc_;
-  static List<uint32_t> flags_;
-
-  static void Clear();
-};
-
-
-List<Object*> PendingFixups::code_(0);
-List<const char*> PendingFixups::name_(0);
-List<int> PendingFixups::pc_(0);
-List<uint32_t> PendingFixups::flags_(0);
-
-
-void PendingFixups::Add(Code* code, MacroAssembler* masm) {
-  // Note this code is not only called during bootstrapping.
-  List<MacroAssembler::Unresolved>* unresolved = masm->unresolved();
-  int n = unresolved->length();
-  for (int i = 0; i < n; i++) {
-    const char* name = unresolved->at(i).name;
-    code_.Add(code);
-    name_.Add(name);
-    pc_.Add(unresolved->at(i).pc);
-    flags_.Add(unresolved->at(i).flags);
-    LOG(StringEvent("unresolved", name));
-  }
-}
-
-
-bool PendingFixups::Process(Handle<JSBuiltinsObject> builtins) {
-  HandleScope scope;
-  // NOTE: Extra fixups may be added to the list during the iteration
-  // due to lazy compilation of functions during the processing. Do not
-  // cache the result of getting the length of the code list.
-  for (int i = 0; i < code_.length(); i++) {
-    const char* name = name_[i];
-    uint32_t flags = flags_[i];
-    Handle<String> symbol = Factory::LookupAsciiSymbol(name);
-    Object* o = builtins->GetProperty(*symbol);
-#ifdef DEBUG
-    if (!o->IsJSFunction()) {
-      V8_Fatal(__FILE__, __LINE__, "Cannot resolve call to builtin %s", name);
-    }
-#endif
-    Handle<JSFunction> f = Handle<JSFunction>(JSFunction::cast(o));
-    // Make sure the number of parameters match the formal parameter count.
-    int argc = Bootstrapper::FixupFlagsArgumentsCount::decode(flags);
-    USE(argc);
-    ASSERT(f->shared()->formal_parameter_count() == argc);
-    if (!f->is_compiled()) {
-      // Do lazy compilation and check for stack overflows.
-      if (!CompileLazy(f, CLEAR_EXCEPTION)) {
-        Clear();
-        return false;
-      }
-    }
-    Code* code = Code::cast(code_[i]);
-    Address pc = code->instruction_start() + pc_[i];
-    bool is_pc_relative = Bootstrapper::FixupFlagsIsPCRelative::decode(flags);
-    bool use_code_object = Bootstrapper::FixupFlagsUseCodeObject::decode(flags);
-
-    if (use_code_object) {
-      if (is_pc_relative) {
-        Assembler::set_target_address_at(
-            pc, reinterpret_cast<Address>(f->code()));
-      } else {
-        *reinterpret_cast<Object**>(pc) = f->code();
-      }
-    } else {
-      Assembler::set_target_address_at(pc, f->code()->instruction_start());
-    }
-
-    LOG(StringEvent("resolved", name));
-  }
-  Clear();
-
-  // TODO(1240818): We should probably try to avoid doing this for all
-  // the V8 builtin JS files. It should only happen after running
-  // runtime.js - just like there shouldn't be any fixups left after
-  // that.
-  for (int i = 0; i < Builtins::NumberOfJavaScriptBuiltins(); i++) {
-    Builtins::JavaScript id = static_cast<Builtins::JavaScript>(i);
-    Handle<String> name = Factory::LookupAsciiSymbol(Builtins::GetName(id));
-    JSFunction* function = JSFunction::cast(builtins->GetProperty(*name));
-    builtins->set_javascript_builtin(id, function);
-  }
-
-  return true;
-}
-
-
-void PendingFixups::Clear() {
-  code_.Clear();
-  name_.Clear();
-  pc_.Clear();
-  flags_.Clear();
-}
-
-
-void PendingFixups::Iterate(ObjectVisitor* v) {
-  if (!code_.is_empty()) {
-    v->VisitPointers(&code_[0], &code_[0] + code_.length());
-  }
 }
 
 
@@ -285,6 +228,7 @@ class Genesis BASE_EMBEDDED {
   bool InstallExtension(const char* name);
   bool InstallExtension(v8::RegisteredExtension* current);
   bool InstallSpecialObjects();
+  bool InstallJSBuiltins(Handle<JSBuiltinsObject> builtins);
   bool ConfigureApiObject(Handle<JSObject> object,
                           Handle<ObjectTemplateInfo> object_template);
   bool ConfigureGlobalObjects(v8::Handle<v8::ObjectTemplate> global_template);
@@ -323,15 +267,9 @@ Genesis* Genesis::current_ = NULL;
 
 void Bootstrapper::Iterate(ObjectVisitor* v) {
   natives_cache.Iterate(v);
+  v->Synchronize("NativesCache");
   extensions_cache.Iterate(v);
-  PendingFixups::Iterate(v);
-}
-
-
-// While setting up the environment, we collect code positions that
-// need to be patched before we can run any code in the environment.
-void Bootstrapper::AddFixup(Code* code, MacroAssembler* masm) {
-  PendingFixups::Add(code, masm);
+  v->Synchronize("Extensions");
 }
 
 
@@ -474,7 +412,7 @@ void Genesis::CreateRoots(v8::Handle<v8::ObjectTemplate> global_template,
   // Please note that the prototype property for function instances must be
   // writable.
   Handle<DescriptorArray> function_map_descriptors =
-      ComputeFunctionInstanceDescriptor(false, true);
+      ComputeFunctionInstanceDescriptor(false, false);
   fm->set_instance_descriptors(*function_map_descriptors);
 
   // Allocate the function map first and then patch the prototype later
@@ -654,6 +592,8 @@ void Genesis::CreateRoots(v8::Handle<v8::ObjectTemplate> global_template,
         InstallFunction(global, "Array", JS_ARRAY_TYPE, JSArray::kSize,
                         Top::initial_object_prototype(), Builtins::ArrayCode,
                         true);
+    array_function->shared()->set_construct_stub(
+        Builtins::builtin(Builtins::ArrayConstructCode));
     array_function->shared()->DontAdaptArguments();
 
     // This seems a bit hackish, but we need to make sure Array.length
@@ -783,11 +723,11 @@ void Genesis::CreateRoots(v8::Handle<v8::ObjectTemplate> global_template,
 #ifdef DEBUG
     LookupResult lookup;
     result->LocalLookup(Heap::callee_symbol(), &lookup);
-    ASSERT(lookup.IsValid() && (lookup.type() == FIELD));
+    ASSERT(lookup.IsProperty() && (lookup.type() == FIELD));
     ASSERT(lookup.GetFieldIndex() == Heap::arguments_callee_index);
 
     result->LocalLookup(Heap::length_symbol(), &lookup);
-    ASSERT(lookup.IsValid() && (lookup.type() == FIELD));
+    ASSERT(lookup.IsProperty() && (lookup.type() == FIELD));
     ASSERT(lookup.GetFieldIndex() == Heap::arguments_length_index);
 
     ASSERT(result->map()->inobject_properties() > Heap::arguments_callee_index);
@@ -884,7 +824,8 @@ bool Genesis::CompileScriptCached(Vector<const char> name,
     ASSERT(source->IsAsciiRepresentation());
     Handle<String> script_name = Factory::NewStringFromUtf8(name);
     boilerplate =
-        Compiler::Compile(source, script_name, 0, 0, extension, NULL);
+        Compiler::Compile(source, script_name, 0, 0, extension, NULL,
+                          Handle<String>::null());
     if (boilerplate.is_null()) return false;
     cache->Add(name, boilerplate);
   }
@@ -900,7 +841,7 @@ bool Genesis::CompileScriptCached(Vector<const char> name,
   Handle<JSFunction> fun =
       Factory::NewFunctionFromBoilerplate(boilerplate, context);
 
-  // Call function using the either the runtime object or the global
+  // Call function using either the runtime object or the global
   // object as the receiver. Provide no parameters.
   Handle<Object> receiver =
       Handle<Object>(use_runtime_context
@@ -910,8 +851,7 @@ bool Genesis::CompileScriptCached(Vector<const char> name,
   Handle<Object> result =
       Execution::Call(fun, receiver, 0, NULL, &has_pending_exception);
   if (has_pending_exception) return false;
-  return PendingFixups::Process(
-      Handle<JSBuiltinsObject>(Top::context()->builtins()));
+  return true;
 }
 
 
@@ -931,7 +871,7 @@ void Genesis::InstallNativeFunctions() {
   INSTALL_NATIVE(JSFunction, "ToInteger", to_integer_fun);
   INSTALL_NATIVE(JSFunction, "ToUint32", to_uint32_fun);
   INSTALL_NATIVE(JSFunction, "ToInt32", to_int32_fun);
-  INSTALL_NATIVE(JSFunction, "ToBoolean", to_boolean_fun);
+  INSTALL_NATIVE(JSFunction, "GlobalEval", global_eval_fun);
   INSTALL_NATIVE(JSFunction, "Instantiate", instantiate_fun);
   INSTALL_NATIVE(JSFunction, "ConfigureTemplateInstance",
                  configure_instance_fun);
@@ -1077,21 +1017,29 @@ bool Genesis::InstallNatives() {
             Factory::LookupAsciiSymbol("context_data"),
             proxy_context_data,
             common_attributes);
-    Handle<Proxy> proxy_eval_from_function =
-        Factory::NewProxy(&Accessors::ScriptEvalFromFunction);
+    Handle<Proxy> proxy_eval_from_script =
+        Factory::NewProxy(&Accessors::ScriptEvalFromScript);
     script_descriptors =
         Factory::CopyAppendProxyDescriptor(
             script_descriptors,
-            Factory::LookupAsciiSymbol("eval_from_function"),
-            proxy_eval_from_function,
+            Factory::LookupAsciiSymbol("eval_from_script"),
+            proxy_eval_from_script,
             common_attributes);
-    Handle<Proxy> proxy_eval_from_position =
-        Factory::NewProxy(&Accessors::ScriptEvalFromPosition);
+    Handle<Proxy> proxy_eval_from_script_position =
+        Factory::NewProxy(&Accessors::ScriptEvalFromScriptPosition);
     script_descriptors =
         Factory::CopyAppendProxyDescriptor(
             script_descriptors,
-            Factory::LookupAsciiSymbol("eval_from_position"),
-            proxy_eval_from_position,
+            Factory::LookupAsciiSymbol("eval_from_script_position"),
+            proxy_eval_from_script_position,
+            common_attributes);
+    Handle<Proxy> proxy_eval_from_function_name =
+        Factory::NewProxy(&Accessors::ScriptEvalFromFunctionName);
+    script_descriptors =
+        Factory::CopyAppendProxyDescriptor(
+            script_descriptors,
+            Factory::LookupAsciiSymbol("eval_from_function_name"),
+            proxy_eval_from_function_name,
             common_attributes);
 
     Handle<Map> script_map = Handle<Map>(script_fun->initial_map());
@@ -1102,6 +1050,19 @@ bool Genesis::InstallNatives() {
     script->set_type(Smi::FromInt(Script::TYPE_NATIVE));
     global_context()->set_empty_script(*script);
   }
+  {
+    // Builtin function for OpaqueReference -- a JSValue-based object,
+    // that keeps its field isolated from JavaScript code. It may store
+    // objects, that JavaScript code may not access.
+    Handle<JSFunction> opaque_reference_fun =
+        InstallFunction(builtins, "OpaqueReference", JS_VALUE_TYPE,
+                        JSValue::kSize, Top::initial_object_prototype(),
+                        Builtins::Illegal, false);
+    Handle<JSObject> prototype =
+        Factory::NewJSObject(Top::object_function(), TENURED);
+    SetPrototype(opaque_reference_fun, prototype);
+    global_context()->set_opaque_reference_function(*opaque_reference_fun);
+  }
 
   if (FLAG_natives_file == NULL) {
     // Without natives file, install default natives.
@@ -1109,6 +1070,10 @@ bool Genesis::InstallNatives() {
          i < Natives::GetBuiltinsCount();
          i++) {
       if (!CompileBuiltin(i)) return false;
+      // TODO(ager): We really only need to install the JS builtin
+      // functions on the builtins object after compiling and running
+      // runtime.js.
+      if (!InstallJSBuiltins(builtins)) return false;
     }
 
     // Setup natives with lazy loading.
@@ -1304,11 +1269,25 @@ bool Genesis::InstallExtension(v8::RegisteredExtension* current) {
   ASSERT(Top::has_pending_exception() != result);
   if (!result) {
     Top::clear_pending_exception();
-    v8::Utils::ReportApiFailure(
-        "v8::Context::New()", "Error installing extension");
   }
   current->set_state(v8::INSTALLED);
   return result;
+}
+
+
+bool Genesis::InstallJSBuiltins(Handle<JSBuiltinsObject> builtins) {
+  HandleScope scope;
+  for (int i = 0; i < Builtins::NumberOfJavaScriptBuiltins(); i++) {
+    Builtins::JavaScript id = static_cast<Builtins::JavaScript>(i);
+    Handle<String> name = Factory::LookupAsciiSymbol(Builtins::GetName(id));
+    Handle<JSFunction> function
+        = Handle<JSFunction>(JSFunction::cast(builtins->GetProperty(*name)));
+    builtins->set_javascript_builtin(id, *function);
+    Handle<SharedFunctionInfo> shared
+        = Handle<SharedFunctionInfo>(function->shared());
+    if (!EnsureCompiled(shared, CLEAR_EXCEPTION)) return false;
+  }
+  return true;
 }
 
 
@@ -1386,7 +1365,7 @@ void Genesis::TransferNamedProperties(Handle<JSObject> from,
           LookupResult result;
           to->LocalLookup(descs->GetKey(i), &result);
           // If the property is already there we skip it
-          if (result.IsValid()) continue;
+          if (result.IsProperty()) continue;
           HandleScope inner;
           Handle<DescriptorArray> inst_descs =
               Handle<DescriptorArray>(to->map()->instance_descriptors());
@@ -1423,7 +1402,7 @@ void Genesis::TransferNamedProperties(Handle<JSObject> from,
         // If the property is already there we skip it.
         LookupResult result;
         to->LocalLookup(String::cast(raw_key), &result);
-        if (result.IsValid()) continue;
+        if (result.IsProperty()) continue;
         // Set the property.
         Handle<String> key = Handle<String>(String::cast(raw_key));
         Handle<Object> value = Handle<Object>(properties->ValueAt(i));
@@ -1471,7 +1450,7 @@ void Genesis::MakeFunctionInstancePrototypeWritable() {
   HandleScope scope;
 
   Handle<DescriptorArray> function_map_descriptors =
-      ComputeFunctionInstanceDescriptor(false, true);
+      ComputeFunctionInstanceDescriptor(false);
   Handle<Map> fm = Factory::CopyMapDropDescriptors(Top::function_map());
   fm->set_instance_descriptors(*function_map_descriptors);
   Top::context()->global_context()->set_function_map(*fm);
@@ -1507,25 +1486,33 @@ void Genesis::AddSpecialFunction(Handle<JSObject> prototype,
 void Genesis::BuildSpecialFunctionTable() {
   HandleScope scope;
   Handle<JSObject> global = Handle<JSObject>(global_context()->global());
-  // Add special versions for Array.prototype.pop and push.
+  // Add special versions for some Array.prototype functions.
   Handle<JSFunction> function =
       Handle<JSFunction>(
           JSFunction::cast(global->GetProperty(Heap::Array_symbol())));
   Handle<JSObject> visible_prototype =
       Handle<JSObject>(JSObject::cast(function->prototype()));
-  // Remember to put push and pop on the hidden prototype if it's there.
-  Handle<JSObject> push_and_pop_prototype;
+  // Remember to put those specializations on the hidden prototype if present.
+  Handle<JSObject> special_prototype;
   Handle<Object> superproto(visible_prototype->GetPrototype());
   if (superproto->IsJSObject() &&
       JSObject::cast(*superproto)->map()->is_hidden_prototype()) {
-    push_and_pop_prototype = Handle<JSObject>::cast(superproto);
+    special_prototype = Handle<JSObject>::cast(superproto);
   } else {
-    push_and_pop_prototype = visible_prototype;
+    special_prototype = visible_prototype;
   }
-  AddSpecialFunction(push_and_pop_prototype, "pop",
+  AddSpecialFunction(special_prototype, "pop",
                      Handle<Code>(Builtins::builtin(Builtins::ArrayPop)));
-  AddSpecialFunction(push_and_pop_prototype, "push",
+  AddSpecialFunction(special_prototype, "push",
                      Handle<Code>(Builtins::builtin(Builtins::ArrayPush)));
+  AddSpecialFunction(special_prototype, "shift",
+                     Handle<Code>(Builtins::builtin(Builtins::ArrayShift)));
+  AddSpecialFunction(special_prototype, "unshift",
+                     Handle<Code>(Builtins::builtin(Builtins::ArrayUnshift)));
+  AddSpecialFunction(special_prototype, "slice",
+                     Handle<Code>(Builtins::builtin(Builtins::ArraySlice)));
+  AddSpecialFunction(special_prototype, "splice",
+                     Handle<Code>(Builtins::builtin(Builtins::ArraySplice)));
 }
 
 
@@ -1581,6 +1568,12 @@ char* Bootstrapper::ArchiveState(char* to) {
 // Restore statics that are thread local.
 char* Bootstrapper::RestoreState(char* from) {
   return Genesis::RestoreState(from);
+}
+
+
+// Called when the top-level V8 mutex is destroyed.
+void Bootstrapper::FreeThreadResources() {
+  ASSERT(Genesis::current() == NULL);
 }
 
 

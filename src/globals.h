@@ -46,8 +46,19 @@ namespace internal {
 #elif defined(__ARMEL__)
 #define V8_HOST_ARCH_ARM 1
 #define V8_HOST_ARCH_32_BIT 1
+#elif defined(_MIPS_ARCH_MIPS32R2)
+#define V8_HOST_ARCH_MIPS 1
+#define V8_HOST_ARCH_32_BIT 1
 #else
-#error Your architecture was not detected as supported by v8
+#error Your host architecture was not detected as supported by v8
+#endif
+
+#if defined(V8_TARGET_ARCH_X64) || defined(V8_TARGET_ARCH_IA32)
+#define V8_TARGET_CAN_READ_UNALIGNED 1
+#elif V8_TARGET_ARCH_ARM
+#elif V8_TARGET_ARCH_MIPS
+#else
+#error Your target architecture is not supported by v8
 #endif
 
 // Support for alternative bool type. This is only enabled if the code is
@@ -96,6 +107,10 @@ typedef byte* Address;
 #define V8PRIxPTR "lx"
 #endif
 
+#if defined(__APPLE__) && defined(__MACH__)
+#define USING_MAC_ABI
+#endif
+
 // Code-point values in Unicode 4.0 are 21 bits wide.
 typedef uint16_t uc16;
 typedef int32_t uc32;
@@ -134,6 +149,14 @@ const intptr_t kObjectAlignmentMask = kObjectAlignment - 1;
 const intptr_t kPointerAlignment = (1 << kPointerSizeLog2);
 const intptr_t kPointerAlignmentMask = kPointerAlignment - 1;
 
+// Desired alignment for maps.
+#if V8_HOST_ARCH_64_BIT
+const intptr_t kMapAlignmentBits = kObjectAlignmentBits;
+#else
+const intptr_t kMapAlignmentBits = kObjectAlignmentBits + 3;
+#endif
+const intptr_t kMapAlignment = (1 << kMapAlignmentBits);
+const intptr_t kMapAlignmentMask = kMapAlignment - 1;
 
 // Tag information for Failure.
 const int kFailureTag = 3;
@@ -163,6 +186,20 @@ const Address kFromSpaceZapValue = reinterpret_cast<Address>(0xbeefdad);
 #endif
 
 
+// Number of bits to represent the page size for paged spaces. The value of 13
+// gives 8K bytes per page.
+const int kPageSizeBits = 13;
+
+
+// Constants relevant to double precision floating point numbers.
+
+// Quiet NaNs have bits 51 to 62 set, possibly the sign bit, and no
+// other bits set.
+const uint64_t kQuietNaNMask = static_cast<uint64_t>(0xfff) << 51;
+// If looking only at the top 32 bits, the QNaN mask is bits 19 to 30.
+const uint32_t kQuietNaNHighBitsMask = 0xfff << (51 - 32);
+
+
 // -----------------------------------------------------------------------------
 // Forward declarations for frequently used classes
 // (sorted alphabetically)
@@ -171,6 +208,7 @@ class AccessorInfo;
 class Allocation;
 class Arguments;
 class Assembler;
+class AssertNoAllocation;
 class BreakableStatement;
 class Code;
 class CodeGenerator;
@@ -256,7 +294,9 @@ enum AllocationSpace {
   LO_SPACE,             // Promoted large objects.
 
   FIRST_SPACE = NEW_SPACE,
-  LAST_SPACE = LO_SPACE
+  LAST_SPACE = LO_SPACE,
+  FIRST_PAGED_SPACE = OLD_POINTER_SPACE,
+  LAST_PAGED_SPACE = CELL_SPACE
 };
 const int kSpaceTagSize = 3;
 const int kSpaceTagMask = (1 << kSpaceTagSize) - 1;
@@ -271,6 +311,8 @@ enum PretenureFlag { NOT_TENURED, TENURED };
 enum GarbageCollector { SCAVENGER, MARK_COMPACTOR };
 
 enum Executability { NOT_EXECUTABLE, EXECUTABLE };
+
+enum VisitMode { VISIT_ALL, VISIT_ALL_IN_SCAVENGE, VISIT_ONLY_STRONG };
 
 
 // A CodeDesc describes a buffer holding instructions and relocation
@@ -339,6 +381,12 @@ enum InlineCacheState {
 enum InLoopFlag {
   NOT_IN_LOOP,
   IN_LOOP
+};
+
+
+enum CallFunctionFlags {
+  NO_CALL_FUNCTION_FLAGS = 0,
+  RECEIVER_MIGHT_BE_VALUE = 1 << 0  // Receiver might not be a JSObject.
 };
 
 
@@ -425,6 +473,10 @@ enum StateTag {
 // POINTER_SIZE_ALIGN returns the value aligned as a pointer.
 #define POINTER_SIZE_ALIGN(value)                               \
   (((value) + kPointerAlignmentMask) & ~kPointerAlignmentMask)
+
+// MAP_SIZE_ALIGN returns the value aligned as a map pointer.
+#define MAP_SIZE_ALIGN(value)                               \
+  (((value) + kMapAlignmentMask) & ~kMapAlignmentMask)
 
 // The expression OFFSET_OF(type, field) computes the byte-offset
 // of the specified field relative to the containing type. This
@@ -550,6 +602,18 @@ inline Dest bit_cast(const Source& source) {
   return dest;
 }
 
+
+// Feature flags bit positions. They are mostly based on the CPUID spec.
+// (We assign CPUID itself to one of the currently reserved bits --
+// feel free to change this if needed.)
+enum CpuFeature { SSE3 = 32,   // x86
+                  SSE2 = 26,   // x86
+                  CMOV = 15,   // x86
+                  RDTSC = 4,   // x86
+                  CPUID = 10,  // x86
+                  VFP3 = 1,    // ARM
+                  ARMv7 = 2,   // ARM
+                  SAHF = 0};   // x86
 
 } }  // namespace v8::internal
 

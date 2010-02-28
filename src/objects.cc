@@ -28,6 +28,7 @@
 #include "v8.h"
 
 #include "api.h"
+#include "arguments.h"
 #include "bootstrapper.h"
 #include "debug.h"
 #include "execution.h"
@@ -36,6 +37,7 @@
 #include "scanner.h"
 #include "scopeinfo.h"
 #include "string-stream.h"
+#include "utils.h"
 
 #ifdef ENABLE_DISASSEMBLER
 #include "disassembler.h"
@@ -158,14 +160,12 @@ Object* Object::GetPropertyWithCallback(Object* receiver,
     Object* fun_obj = data->getter();
     v8::AccessorGetter call_fun = v8::ToCData<v8::AccessorGetter>(fun_obj);
     HandleScope scope;
-    Handle<JSObject> self(JSObject::cast(receiver));
-    Handle<JSObject> holder_handle(JSObject::cast(holder));
+    JSObject* self = JSObject::cast(receiver);
+    JSObject* holder_handle = JSObject::cast(holder);
     Handle<String> key(name);
-    Handle<Object> fun_data(data->data());
-    LOG(ApiNamedPropertyAccess("load", *self, name));
-    v8::AccessorInfo info(v8::Utils::ToLocal(self),
-                          v8::Utils::ToLocal(fun_data),
-                          v8::Utils::ToLocal(holder_handle));
+    LOG(ApiNamedPropertyAccess("load", self, name));
+    CustomArguments args(data->data(), self, holder_handle);
+    v8::AccessorInfo info(args.end());
     v8::Handle<v8::Value> result;
     {
       // Leaving JavaScript.
@@ -219,7 +219,7 @@ Object* JSObject::GetPropertyWithFailedAccessCheck(
     LookupResult* result,
     String* name,
     PropertyAttributes* attributes) {
-  if (result->IsValid()) {
+  if (result->IsProperty()) {
     switch (result->type()) {
       case CALLBACKS: {
         // Only allow API accessors.
@@ -242,7 +242,7 @@ Object* JSObject::GetPropertyWithFailedAccessCheck(
         // Search ALL_CAN_READ accessors in prototype chain.
         LookupResult r;
         result->holder()->LookupRealNamedPropertyInPrototypes(name, &r);
-        if (r.IsValid()) {
+        if (r.IsProperty()) {
           return GetPropertyWithFailedAccessCheck(receiver,
                                                   &r,
                                                   name,
@@ -255,16 +255,16 @@ Object* JSObject::GetPropertyWithFailedAccessCheck(
         // No access check in GetPropertyAttributeWithInterceptor.
         LookupResult r;
         result->holder()->LookupRealNamedProperty(name, &r);
-        if (r.IsValid()) {
+        if (r.IsProperty()) {
           return GetPropertyWithFailedAccessCheck(receiver,
                                                   &r,
                                                   name,
                                                   attributes);
         }
-      }
-      default: {
         break;
       }
+      default:
+        UNREACHABLE();
     }
   }
 
@@ -280,7 +280,7 @@ PropertyAttributes JSObject::GetPropertyAttributeWithFailedAccessCheck(
     LookupResult* result,
     String* name,
     bool continue_search) {
-  if (result->IsValid()) {
+  if (result->IsProperty()) {
     switch (result->type()) {
       case CALLBACKS: {
         // Only allow API accessors.
@@ -301,7 +301,7 @@ PropertyAttributes JSObject::GetPropertyAttributeWithFailedAccessCheck(
         // Search ALL_CAN_READ accessors in prototype chain.
         LookupResult r;
         result->holder()->LookupRealNamedPropertyInPrototypes(name, &r);
-        if (r.IsValid()) {
+        if (r.IsProperty()) {
           return GetPropertyAttributeWithFailedAccessCheck(receiver,
                                                            &r,
                                                            name,
@@ -319,7 +319,7 @@ PropertyAttributes JSObject::GetPropertyAttributeWithFailedAccessCheck(
         } else {
           result->holder()->LocalLookupRealNamedProperty(name, &r);
         }
-        if (r.IsValid()) {
+        if (r.IsProperty()) {
           return GetPropertyAttributeWithFailedAccessCheck(receiver,
                                                            &r,
                                                            name,
@@ -328,9 +328,8 @@ PropertyAttributes JSObject::GetPropertyAttributeWithFailedAccessCheck(
         break;
       }
 
-      default: {
-        break;
-      }
+      default:
+        UNREACHABLE();
     }
   }
 
@@ -476,6 +475,21 @@ Object* JSObject::DeleteNormalizedProperty(String* name, DeleteMode mode) {
 }
 
 
+bool JSObject::IsDirty() {
+  Object* cons_obj = map()->constructor();
+  if (!cons_obj->IsJSFunction())
+    return true;
+  JSFunction* fun = JSFunction::cast(cons_obj);
+  if (!fun->shared()->function_data()->IsFunctionTemplateInfo())
+    return true;
+  // If the object is fully fast case and has the same map it was
+  // created with then no changes can have been made to it.
+  return map() != fun->initial_map()
+      || !HasFastElements()
+      || !HasFastProperties();
+}
+
+
 Object* Object::GetProperty(Object* receiver,
                             LookupResult* result,
                             String* name,
@@ -490,7 +504,7 @@ Object* Object::GetProperty(Object* receiver,
   // holder will always be the interceptor holder and the search may
   // only continue with a current object just after the interceptor
   // holder in the prototype chain.
-  Object* last = result->IsValid() ? result->holder() : Heap::null_value();
+  Object* last = result->IsProperty() ? result->holder() : Heap::null_value();
   for (Object* current = this; true; current = current->GetPrototype()) {
     if (current->IsAccessCheckNeeded()) {
       // Check if we're allowed to read from the current object. Note
@@ -604,12 +618,12 @@ void Smi::SmiPrint(StringStream* accumulator) {
 
 
 void Failure::FailurePrint(StringStream* accumulator) {
-  accumulator->Add("Failure(%d)", value());
+  accumulator->Add("Failure(%p)", reinterpret_cast<void*>(value()));
 }
 
 
 void Failure::FailurePrint() {
-  PrintF("Failure(%d)", value());
+  PrintF("Failure(%p)", reinterpret_cast<void*>(value()));
 }
 
 
@@ -659,7 +673,7 @@ static bool AnWord(String* str) {
 }
 
 
-Object* String::TryFlatten() {
+Object* String::SlowTryFlatten(PretenureFlag pretenure) {
 #ifdef DEBUG
   // Do not attempt to flatten in debug mode when allocation is not
   // allowed.  This is to avoid an assertion failure when allocating.
@@ -669,23 +683,6 @@ Object* String::TryFlatten() {
 #endif
 
   switch (StringShape(this).representation_tag()) {
-    case kSlicedStringTag: {
-      SlicedString* ss = SlicedString::cast(this);
-      // The SlicedString constructor should ensure that there are no
-      // SlicedStrings that are constructed directly on top of other
-      // SlicedStrings.
-      String* buf = ss->buffer();
-      ASSERT(!buf->IsSlicedString());
-      Object* ok = buf->TryFlatten();
-      if (ok->IsFailure()) return ok;
-      // Under certain circumstances (TryFlattenIfNotFlat fails in
-      // String::Slice) we can have a cons string under a slice.
-      // In this case we need to get the flat string out of the cons!
-      if (StringShape(String::cast(ok)).IsCons()) {
-        ss->set_buffer(ConsString::cast(ok)->first());
-      }
-      return this;
-    }
     case kConsStringTag: {
       ConsString* cs = ConsString::cast(this);
       if (cs->second()->length() == 0) {
@@ -694,7 +691,7 @@ Object* String::TryFlatten() {
       // There's little point in putting the flat string in new space if the
       // cons string is in old space.  It can never get GCed until there is
       // an old space GC.
-      PretenureFlag tenure = Heap::InNewSpace(this) ? NOT_TENURED : TENURED;
+      PretenureFlag tenure = Heap::InNewSpace(this) ? pretenure : TENURED;
       int len = length();
       Object* object;
       String* result;
@@ -737,10 +734,11 @@ Object* String::TryFlatten() {
 
 bool String::MakeExternal(v8::String::ExternalStringResource* resource) {
 #ifdef DEBUG
-  {  // NOLINT (presubmit.py gets confused about if and braces)
+  if (FLAG_enable_slow_asserts) {
     // Assert that the resource and the string are equivalent.
     ASSERT(static_cast<size_t>(this->length()) == resource->length());
-    SmartPointer<uc16> smart_chars = this->ToWideCString();
+    SmartPointer<uc16> smart_chars(NewArray<uc16>(this->length()));
+    String::WriteToFlat(this, *smart_chars, 0, this->length());
     ASSERT(memcmp(*smart_chars,
                   resource->data(),
                   resource->length() * sizeof(**smart_chars)) == 0);
@@ -756,19 +754,21 @@ bool String::MakeExternal(v8::String::ExternalStringResource* resource) {
   ASSERT(size >= ExternalString::kSize);
   bool is_symbol = this->IsSymbol();
   int length = this->length();
+  int hash_field = this->hash_field();
 
   // Morph the object to an external string by adjusting the map and
   // reinitializing the fields.
-  this->set_map(ExternalTwoByteString::StringMap(length));
+  this->set_map(Heap::external_string_map());
   ExternalTwoByteString* self = ExternalTwoByteString::cast(this);
   self->set_length(length);
+  self->set_hash_field(hash_field);
   self->set_resource(resource);
   // Additionally make the object into an external symbol if the original string
   // was a symbol to start with.
   if (is_symbol) {
     self->Hash();  // Force regeneration of the hash value.
     // Now morph this external string into a external symbol.
-    self->set_map(ExternalTwoByteString::SymbolMap(length));
+    this->set_map(Heap::external_symbol_map());
   }
 
   // Fill the remainder of the string with dead wood.
@@ -780,10 +780,11 @@ bool String::MakeExternal(v8::String::ExternalStringResource* resource) {
 
 bool String::MakeExternal(v8::String::ExternalAsciiStringResource* resource) {
 #ifdef DEBUG
-  {  // NOLINT (presubmit.py gets confused about if and braces)
+  if (FLAG_enable_slow_asserts) {
     // Assert that the resource and the string are equivalent.
     ASSERT(static_cast<size_t>(this->length()) == resource->length());
-    SmartPointer<char> smart_chars = this->ToCString();
+    SmartPointer<char> smart_chars(NewArray<char>(this->length()));
+    String::WriteToFlat(this, *smart_chars, 0, this->length());
     ASSERT(memcmp(*smart_chars,
                   resource->data(),
                   resource->length()*sizeof(**smart_chars)) == 0);
@@ -799,19 +800,21 @@ bool String::MakeExternal(v8::String::ExternalAsciiStringResource* resource) {
   ASSERT(size >= ExternalString::kSize);
   bool is_symbol = this->IsSymbol();
   int length = this->length();
+  int hash_field = this->hash_field();
 
   // Morph the object to an external string by adjusting the map and
   // reinitializing the fields.
-  this->set_map(ExternalAsciiString::StringMap(length));
+  this->set_map(Heap::external_ascii_string_map());
   ExternalAsciiString* self = ExternalAsciiString::cast(this);
   self->set_length(length);
+  self->set_hash_field(hash_field);
   self->set_resource(resource);
   // Additionally make the object into an external symbol if the original string
   // was a symbol to start with.
   if (is_symbol) {
     self->Hash();  // Force regeneration of the hash value.
     // Now morph this external string into a external symbol.
-    self->set_map(ExternalAsciiString::SymbolMap(length));
+    this->set_map(Heap::external_ascii_symbol_map());
   }
 
   // Fill the remainder of the string with dead wood.
@@ -823,7 +826,7 @@ bool String::MakeExternal(v8::String::ExternalAsciiStringResource* resource) {
 
 void String::StringShortPrint(StringStream* accumulator) {
   int len = length();
-  if (len > kMaxMediumStringSize) {
+  if (len > kMaxShortPrintLength) {
     accumulator->Add("<Very long string[%u]>", len);
     return;
   }
@@ -991,6 +994,34 @@ void HeapObject::HeapObjectShortPrint(StringStream* accumulator) {
     case PIXEL_ARRAY_TYPE:
       accumulator->Add("<PixelArray[%u]>", PixelArray::cast(this)->length());
       break;
+    case EXTERNAL_BYTE_ARRAY_TYPE:
+      accumulator->Add("<ExternalByteArray[%u]>",
+                       ExternalByteArray::cast(this)->length());
+      break;
+    case EXTERNAL_UNSIGNED_BYTE_ARRAY_TYPE:
+      accumulator->Add("<ExternalUnsignedByteArray[%u]>",
+                       ExternalUnsignedByteArray::cast(this)->length());
+      break;
+    case EXTERNAL_SHORT_ARRAY_TYPE:
+      accumulator->Add("<ExternalShortArray[%u]>",
+                       ExternalShortArray::cast(this)->length());
+      break;
+    case EXTERNAL_UNSIGNED_SHORT_ARRAY_TYPE:
+      accumulator->Add("<ExternalUnsignedShortArray[%u]>",
+                       ExternalUnsignedShortArray::cast(this)->length());
+      break;
+    case EXTERNAL_INT_ARRAY_TYPE:
+      accumulator->Add("<ExternalIntArray[%u]>",
+                       ExternalIntArray::cast(this)->length());
+      break;
+    case EXTERNAL_UNSIGNED_INT_ARRAY_TYPE:
+      accumulator->Add("<ExternalUnsignedIntArray[%u]>",
+                       ExternalUnsignedIntArray::cast(this)->length());
+      break;
+    case EXTERNAL_FLOAT_ARRAY_TYPE:
+      accumulator->Add("<ExternalFloatArray[%u]>",
+                       ExternalFloatArray::cast(this)->length());
+      break;
     case SHARED_FUNCTION_INFO_TYPE:
       accumulator->Add("<SharedFunctionInfo>");
       break;
@@ -1091,8 +1122,14 @@ void HeapObject::IterateBody(InstanceType type, int object_size,
       case kConsStringTag:
         reinterpret_cast<ConsString*>(this)->ConsStringIterateBody(v);
         break;
-      case kSlicedStringTag:
-        reinterpret_cast<SlicedString*>(this)->SlicedStringIterateBody(v);
+      case kExternalStringTag:
+        if ((type & kStringEncodingMask) == kAsciiStringTag) {
+          reinterpret_cast<ExternalAsciiString*>(this)->
+              ExternalAsciiStringIterateBody(v);
+        } else {
+          reinterpret_cast<ExternalTwoByteString*>(this)->
+              ExternalTwoByteStringIterateBody(v);
+        }
         break;
     }
     return;
@@ -1133,6 +1170,13 @@ void HeapObject::IterateBody(InstanceType type, int object_size,
     case FILLER_TYPE:
     case BYTE_ARRAY_TYPE:
     case PIXEL_ARRAY_TYPE:
+    case EXTERNAL_BYTE_ARRAY_TYPE:
+    case EXTERNAL_UNSIGNED_BYTE_ARRAY_TYPE:
+    case EXTERNAL_SHORT_ARRAY_TYPE:
+    case EXTERNAL_UNSIGNED_SHORT_ARRAY_TYPE:
+    case EXTERNAL_INT_ARRAY_TYPE:
+    case EXTERNAL_UNSIGNED_INT_ARRAY_TYPE:
+    case EXTERNAL_FLOAT_ARRAY_TYPE:
       break;
     case SHARED_FUNCTION_INFO_TYPE: {
       SharedFunctionInfo* shared = reinterpret_cast<SharedFunctionInfo*>(this);
@@ -1186,10 +1230,27 @@ void HeapNumber::HeapNumberPrint(StringStream* accumulator) {
 
 
 String* JSObject::class_name() {
-  if (IsJSFunction()) return Heap::function_class_symbol();
+  if (IsJSFunction()) {
+    return Heap::function_class_symbol();
+  }
   if (map()->constructor()->IsJSFunction()) {
     JSFunction* constructor = JSFunction::cast(map()->constructor());
     return String::cast(constructor->shared()->instance_class_name());
+  }
+  // If the constructor is not present, return "Object".
+  return Heap::Object_symbol();
+}
+
+
+String* JSObject::constructor_name() {
+  if (IsJSFunction()) {
+    return JSFunction::cast(this)->IsBoilerplate() ?
+      Heap::function_class_symbol() : Heap::closure_symbol();
+  }
+  if (map()->constructor()->IsJSFunction()) {
+    JSFunction* constructor = JSFunction::cast(map()->constructor());
+    String* name = String::cast(constructor->shared()->name());
+    return name->length() > 0 ? name : constructor->shared()->inferred_name();
   }
   // If the constructor is not present, return "Object".
   return Heap::Object_symbol();
@@ -1289,6 +1350,8 @@ Object* JSObject::AddFastProperty(String* name,
 Object* JSObject::AddConstantFunctionProperty(String* name,
                                               JSFunction* function,
                                               PropertyAttributes attributes) {
+  ASSERT(!Heap::InNewSpace(function));
+
   // Allocate new instance descriptors with (name, function) added
   ConstantFunctionDescriptor d(name, function, attributes);
   Object* new_descriptors =
@@ -1375,7 +1438,7 @@ Object* JSObject::AddProperty(String* name,
     // Ensure the descriptor array does not get too big.
     if (map()->instance_descriptors()->number_of_descriptors() <
         DescriptorArray::kMaxNumberOfDescriptors) {
-      if (value->IsJSFunction()) {
+      if (value->IsJSFunction() && !Heap::InNewSpace(value)) {
         return AddConstantFunctionProperty(name,
                                            JSFunction::cast(value),
                                            attributes);
@@ -1399,15 +1462,19 @@ Object* JSObject::SetPropertyPostInterceptor(String* name,
   // Check local property, ignore interceptor.
   LookupResult result;
   LocalLookupRealNamedProperty(name, &result);
-  if (result.IsValid()) return SetProperty(&result, name, value, attributes);
-  // Add real property.
+  if (result.IsFound()) {
+    // An existing property, a map transition or a null descriptor was
+    // found.  Use set property to handle all these cases.
+    return SetProperty(&result, name, value, attributes);
+  }
+  // Add a new real property.
   return AddProperty(name, value, attributes);
 }
 
 
 Object* JSObject::ReplaceSlowProperty(String* name,
-                                       Object* value,
-                                       PropertyAttributes attributes) {
+                                      Object* value,
+                                      PropertyAttributes attributes) {
   StringDictionary* dictionary = property_dictionary();
   int old_index = dictionary->FindEntry(name);
   int new_enumeration_index = 0;  // 0 means "Use the next available index."
@@ -1420,6 +1487,7 @@ Object* JSObject::ReplaceSlowProperty(String* name,
   PropertyDetails new_details(attributes, NORMAL, new_enumeration_index);
   return SetNormalizedProperty(name, value, new_details);
 }
+
 
 Object* JSObject::ConvertDescriptorToFieldAndMapTransition(
     String* name,
@@ -1507,11 +1575,9 @@ Object* JSObject::SetPropertyWithInterceptor(String* name,
   Handle<Object> value_handle(value);
   Handle<InterceptorInfo> interceptor(GetNamedInterceptor());
   if (!interceptor->setter()->IsUndefined()) {
-    Handle<Object> data_handle(interceptor->data());
     LOG(ApiNamedPropertyAccess("interceptor-named-set", this, name));
-    v8::AccessorInfo info(v8::Utils::ToLocal(this_handle),
-                          v8::Utils::ToLocal(data_handle),
-                          v8::Utils::ToLocal(this_handle));
+    CustomArguments args(interceptor->data(), this, this);
+    v8::AccessorInfo info(args.end());
     v8::NamedPropertySetter setter =
         v8::ToCData<v8::NamedPropertySetter>(interceptor->setter());
     v8::Handle<v8::Value> result;
@@ -1574,14 +1640,10 @@ Object* JSObject::SetPropertyWithCallback(Object* structure,
     Object* call_obj = data->setter();
     v8::AccessorSetter call_fun = v8::ToCData<v8::AccessorSetter>(call_obj);
     if (call_fun == NULL) return value;
-    Handle<JSObject> self(this);
-    Handle<JSObject> holder_handle(JSObject::cast(holder));
     Handle<String> key(name);
-    Handle<Object> fun_data(data->data());
     LOG(ApiNamedPropertyAccess("store", this, name));
-    v8::AccessorInfo info(v8::Utils::ToLocal(self),
-                          v8::Utils::ToLocal(fun_data),
-                          v8::Utils::ToLocal(holder_handle));
+    CustomArguments args(data->data(), this, JSObject::cast(holder));
+    v8::AccessorInfo info(args.end());
     {
       // Leaving JavaScript.
       VMState state(EXTERNAL);
@@ -1637,8 +1699,8 @@ void JSObject::LookupCallbackSetterInPrototypes(String* name,
        pt != Heap::null_value();
        pt = pt->GetPrototype()) {
     JSObject::cast(pt)->LocalLookupRealNamedProperty(name, result);
-    if (result->IsValid()) {
-      if (!result->IsTransitionType() && result->IsReadOnly()) {
+    if (result->IsProperty()) {
+      if (result->IsReadOnly()) {
         result->NotFound();
         return;
       }
@@ -1699,7 +1761,11 @@ void JSObject::LocalLookupRealNamedProperty(String* name,
 
   if (HasFastProperties()) {
     LookupInDescriptor(name, result);
-    if (result->IsValid()) {
+    if (result->IsFound()) {
+      // A property, a map transition or a null descriptor was found.
+      // We return all of these result types because
+      // LocalLookupRealNamedProperty is used when setting properties
+      // where map transitions and null descriptors are handled.
       ASSERT(result->holder() == this && result->type() != NORMAL);
       // Disallow caching for uninitialized constants. These can only
       // occur as fields.
@@ -1749,16 +1815,7 @@ void JSObject::LookupRealNamedPropertyInPrototypes(String* name,
        pt != Heap::null_value();
        pt = JSObject::cast(pt)->GetPrototype()) {
     JSObject::cast(pt)->LocalLookupRealNamedProperty(name, result);
-    if (result->IsValid()) {
-      switch (result->type()) {
-        case NORMAL:
-        case FIELD:
-        case CONSTANT_FUNCTION:
-        case CALLBACKS:
-          return;
-        default: break;
-      }
-    }
+    if (result->IsProperty() && (result->type() != INTERCEPTOR)) return;
   }
   result->NotFound();
 }
@@ -1818,6 +1875,14 @@ Object* JSObject::SetProperty(LookupResult* result,
   // interceptor calls.
   AssertNoContextChange ncc;
 
+  // Optimization for 2-byte strings often used as keys in a decompression
+  // dictionary.  We make these short keys into symbols to avoid constantly
+  // reallocating them.
+  if (!name->IsSymbol() && name->length() <= 2) {
+    Object* symbol_version = Heap::LookupSymbol(name);
+    if (!symbol_version->IsFailure()) name = String::cast(symbol_version);
+  }
+
   // Check access rights if needed.
   if (IsAccessCheckNeeded()
       && !Top::MayNamedAccess(this, name, v8::ACCESS_SET)) {
@@ -1836,14 +1901,15 @@ Object* JSObject::SetProperty(LookupResult* result,
     // accessor that wants to handle the property.
     LookupResult accessor_result;
     LookupCallbackSetterInPrototypes(name, &accessor_result);
-    if (accessor_result.IsValid()) {
+    if (accessor_result.IsProperty()) {
       return SetPropertyWithCallback(accessor_result.GetCallbackObject(),
                                      name,
                                      value,
                                      accessor_result.holder());
     }
   }
-  if (result->IsNotFound()) {
+  if (!result->IsFound()) {
+    // Neither properties nor transitions found.
     return AddProperty(name, value, attributes);
   }
   if (!result->IsLoaded()) {
@@ -1905,15 +1971,12 @@ Object* JSObject::IgnoreAttributesAndSetLocalProperty(
   // Make sure that the top context does not change when doing callbacks or
   // interceptor calls.
   AssertNoContextChange ncc;
-  // ADDED TO CLONE
-  LookupResult result_struct;
-  LocalLookup(name, &result_struct);
-  LookupResult* result = &result_struct;
-  // END ADDED TO CLONE
+  LookupResult result;
+  LocalLookup(name, &result);
   // Check access rights if needed.
   if (IsAccessCheckNeeded()
-    && !Top::MayNamedAccess(this, name, v8::ACCESS_SET)) {
-    return SetPropertyWithFailedAccessCheck(result, name, value);
+      && !Top::MayNamedAccess(this, name, v8::ACCESS_SET)) {
+    return SetPropertyWithFailedAccessCheck(&result, name, value);
   }
 
   if (IsJSGlobalProxy()) {
@@ -1927,31 +1990,34 @@ Object* JSObject::IgnoreAttributesAndSetLocalProperty(
   }
 
   // Check for accessor in prototype chain removed here in clone.
-  if (result->IsNotFound()) {
+  if (!result.IsFound()) {
+    // Neither properties nor transitions found.
     return AddProperty(name, value, attributes);
   }
-  if (!result->IsLoaded()) {
-    return SetLazyProperty(result, name, value, attributes);
+  if (!result.IsLoaded()) {
+    return SetLazyProperty(&result, name, value, attributes);
   }
+  PropertyDetails details = PropertyDetails(attributes, NORMAL);
+
   // Check of IsReadOnly removed from here in clone.
-  switch (result->type()) {
+  switch (result.type()) {
     case NORMAL:
-      return SetNormalizedProperty(result, value);
+      return SetNormalizedProperty(name, value, details);
     case FIELD:
-      return FastPropertyAtPut(result->GetFieldIndex(), value);
+      return FastPropertyAtPut(result.GetFieldIndex(), value);
     case MAP_TRANSITION:
-      if (attributes == result->GetAttributes()) {
+      if (attributes == result.GetAttributes()) {
         // Only use map transition if the attributes match.
-        return AddFastPropertyUsingMap(result->GetTransitionMap(),
+        return AddFastPropertyUsingMap(result.GetTransitionMap(),
                                        name,
                                        value);
       }
       return ConvertDescriptorToField(name, value, attributes);
     case CONSTANT_FUNCTION:
       // Only replace the function if necessary.
-      if (value == result->GetConstantFunction()) return value;
+      if (value == result.GetConstantFunction()) return value;
       // Preserve the attributes of this existing property.
-      attributes = result->GetAttributes();
+      attributes = result.GetAttributes();
       return ConvertDescriptorToField(name, value, attributes);
     case CALLBACKS:
     case INTERCEPTOR:
@@ -2005,10 +2071,8 @@ PropertyAttributes JSObject::GetPropertyAttributeWithInterceptor(
   Handle<JSObject> receiver_handle(receiver);
   Handle<JSObject> holder_handle(this);
   Handle<String> name_handle(name);
-  Handle<Object> data_handle(interceptor->data());
-  v8::AccessorInfo info(v8::Utils::ToLocal(receiver_handle),
-                        v8::Utils::ToLocal(data_handle),
-                        v8::Utils::ToLocal(holder_handle));
+  CustomArguments args(interceptor->data(), receiver, this);
+  v8::AccessorInfo info(args.end());
   if (!interceptor->query()->IsUndefined()) {
     v8::NamedPropertyQuery query =
         v8::ToCData<v8::NamedPropertyQuery>(interceptor->query());
@@ -2069,7 +2133,7 @@ PropertyAttributes JSObject::GetPropertyAttribute(JSObject* receiver,
                                                      name,
                                                      continue_search);
   }
-  if (result->IsValid()) {
+  if (result->IsProperty()) {
     switch (result->type()) {
       case NORMAL:  // fall through
       case FIELD:
@@ -2079,13 +2143,8 @@ PropertyAttributes JSObject::GetPropertyAttribute(JSObject* receiver,
       case INTERCEPTOR:
         return result->holder()->
           GetPropertyAttributeWithInterceptor(receiver, name, continue_search);
-      case MAP_TRANSITION:
-      case CONSTANT_TRANSITION:
-      case NULL_DESCRIPTOR:
-        return ABSENT;
       default:
         UNREACHABLE();
-        break;
     }
   }
   return ABSENT;
@@ -2215,7 +2274,7 @@ Object* JSObject::TransformToFastProperties(int unused_property_fields) {
 
 
 Object* JSObject::NormalizeElements() {
-  ASSERT(!HasPixelElements());
+  ASSERT(!HasPixelElements() && !HasExternalArrayElements());
   if (HasDictionaryElements()) return this;
 
   // Get number of entries.
@@ -2258,7 +2317,7 @@ Object* JSObject::DeletePropertyPostInterceptor(String* name, DeleteMode mode) {
   // Check local property, ignore interceptor.
   LookupResult result;
   LocalLookupRealNamedProperty(name, &result);
-  if (!result.IsValid()) return Heap::true_value();
+  if (!result.IsProperty()) return Heap::true_value();
 
   // Normalize object if needed.
   Object* obj = NormalizeProperties(CLEAR_INOBJECT_PROPERTIES, 0);
@@ -2276,11 +2335,9 @@ Object* JSObject::DeletePropertyWithInterceptor(String* name) {
   if (!interceptor->deleter()->IsUndefined()) {
     v8::NamedPropertyDeleter deleter =
         v8::ToCData<v8::NamedPropertyDeleter>(interceptor->deleter());
-    Handle<Object> data_handle(interceptor->data());
     LOG(ApiNamedPropertyAccess("interceptor-named-delete", *this_handle, name));
-    v8::AccessorInfo info(v8::Utils::ToLocal(this_handle),
-                          v8::Utils::ToLocal(data_handle),
-                          v8::Utils::ToLocal(this_handle));
+    CustomArguments args(interceptor->data(), this, this);
+    v8::AccessorInfo info(args.end());
     v8::Handle<v8::Boolean> result;
     {
       // Leaving JavaScript.
@@ -2302,7 +2359,7 @@ Object* JSObject::DeletePropertyWithInterceptor(String* name) {
 
 Object* JSObject::DeleteElementPostInterceptor(uint32_t index,
                                                DeleteMode mode) {
-  ASSERT(!HasPixelElements());
+  ASSERT(!HasPixelElements() && !HasExternalArrayElements());
   switch (GetElementsKind()) {
     case FAST_ELEMENTS: {
       uint32_t length = IsJSArray() ?
@@ -2339,11 +2396,9 @@ Object* JSObject::DeleteElementWithInterceptor(uint32_t index) {
   v8::IndexedPropertyDeleter deleter =
       v8::ToCData<v8::IndexedPropertyDeleter>(interceptor->deleter());
   Handle<JSObject> this_handle(this);
-  Handle<Object> data_handle(interceptor->data());
   LOG(ApiIndexedPropertyAccess("interceptor-indexed-delete", this, index));
-  v8::AccessorInfo info(v8::Utils::ToLocal(this_handle),
-                        v8::Utils::ToLocal(data_handle),
-                        v8::Utils::ToLocal(this_handle));
+  CustomArguments args(interceptor->data(), this, this);
+  v8::AccessorInfo info(args.end());
   v8::Handle<v8::Boolean> result;
   {
     // Leaving JavaScript.
@@ -2395,10 +2450,17 @@ Object* JSObject::DeleteElement(uint32_t index, DeleteMode mode) {
       }
       break;
     }
-    case PIXEL_ELEMENTS: {
-      // Pixel elements cannot be deleted. Just silently ignore here.
+    case PIXEL_ELEMENTS:
+    case EXTERNAL_BYTE_ELEMENTS:
+    case EXTERNAL_UNSIGNED_BYTE_ELEMENTS:
+    case EXTERNAL_SHORT_ELEMENTS:
+    case EXTERNAL_UNSIGNED_SHORT_ELEMENTS:
+    case EXTERNAL_INT_ELEMENTS:
+    case EXTERNAL_UNSIGNED_INT_ELEMENTS:
+    case EXTERNAL_FLOAT_ELEMENTS:
+      // Pixel and external array elements cannot be deleted. Just
+      // silently ignore here.
       break;
-    }
     case DICTIONARY_ELEMENTS: {
       NumberDictionary* dictionary = element_dictionary();
       int entry = dictionary->FindEntry(index);
@@ -2439,7 +2501,7 @@ Object* JSObject::DeleteProperty(String* name, DeleteMode mode) {
   } else {
     LookupResult result;
     LocalLookup(name, &result);
-    if (!result.IsValid()) return Heap::true_value();
+    if (!result.IsProperty()) return Heap::true_value();
     // Ignore attributes if forcing a deletion.
     if (result.IsDontDelete() && mode != FORCE_DELETION) {
       return Heap::false_value();
@@ -2489,7 +2551,15 @@ bool JSObject::ReferencesObject(Object* obj) {
   // Check if the object is among the indexed properties.
   switch (GetElementsKind()) {
     case PIXEL_ELEMENTS:
-      // Raw pixels do not reference other objects.
+    case EXTERNAL_BYTE_ELEMENTS:
+    case EXTERNAL_UNSIGNED_BYTE_ELEMENTS:
+    case EXTERNAL_SHORT_ELEMENTS:
+    case EXTERNAL_UNSIGNED_SHORT_ELEMENTS:
+    case EXTERNAL_INT_ELEMENTS:
+    case EXTERNAL_UNSIGNED_INT_ELEMENTS:
+    case EXTERNAL_FLOAT_ELEMENTS:
+      // Raw pixels and external arrays do not reference other
+      // objects.
       break;
     case FAST_ELEMENTS: {
       int length = IsJSArray() ?
@@ -2559,33 +2629,24 @@ bool JSObject::ReferencesObject(Object* obj) {
 
 
 // Tests for the fast common case for property enumeration:
-// - this object has an enum cache
-// - this object has no elements
-// - no prototype has enumerable properties/elements
-// - neither this object nor any prototype has interceptors
+// - This object and all prototypes has an enum cache (which means that it has
+//   no interceptors and needs no access checks).
+// - This object has no elements.
+// - No prototype has enumerable properties/elements.
 bool JSObject::IsSimpleEnum() {
-  JSObject* arguments_boilerplate =
-      Top::context()->global_context()->arguments_boilerplate();
-  JSFunction* arguments_function =
-      JSFunction::cast(arguments_boilerplate->map()->constructor());
-  if (IsAccessCheckNeeded()) return false;
-  if (map()->constructor() == arguments_function) return false;
-
   for (Object* o = this;
        o != Heap::null_value();
        o = JSObject::cast(o)->GetPrototype()) {
     JSObject* curr = JSObject::cast(o);
-    if (!curr->HasFastProperties()) return false;
     if (!curr->map()->instance_descriptors()->HasEnumCache()) return false;
+    ASSERT(!curr->HasNamedInterceptor());
+    ASSERT(!curr->HasIndexedInterceptor());
+    ASSERT(!curr->IsAccessCheckNeeded());
     if (curr->NumberOfEnumElements() > 0) return false;
-    if (curr->HasNamedInterceptor()) return false;
-    if (curr->HasIndexedInterceptor()) return false;
     if (curr != this) {
       FixedArray* curr_fixed_array =
           FixedArray::cast(curr->map()->instance_descriptors()->GetEnumCache());
-      if (curr_fixed_array->length() > 0) {
-        return false;
-      }
+      if (curr_fixed_array->length() > 0) return false;
     }
   }
   return true;
@@ -2675,7 +2736,7 @@ void JSObject::Lookup(String* name, LookupResult* result) {
        current != Heap::null_value();
        current = JSObject::cast(current)->GetPrototype()) {
     JSObject::cast(current)->LocalLookup(name, result);
-    if (result->IsValid() && !result->IsTransitionType()) return;
+    if (result->IsProperty()) return;
   }
   result->NotFound();
 }
@@ -2687,7 +2748,7 @@ void JSObject::LookupCallback(String* name, LookupResult* result) {
        current != Heap::null_value();
        current = JSObject::cast(current)->GetPrototype()) {
     JSObject::cast(current)->LocalLookupRealNamedProperty(name, result);
-    if (result->IsValid() && result->type() == CALLBACKS) return;
+    if (result->IsProperty() && result->type() == CALLBACKS) return;
   }
   result->NotFound();
 }
@@ -2707,7 +2768,7 @@ Object* JSObject::DefineGetterSetter(String* name,
   }
 
   // Try to flatten before operating on the string.
-  name->TryFlattenIfNotFlat();
+  name->TryFlatten();
 
   // Check if there is an API defined callback object which prohibits
   // callback overwriting in this object or it's prototype chain.
@@ -2717,7 +2778,7 @@ Object* JSObject::DefineGetterSetter(String* name,
   // cause security problems.
   LookupResult callback_result;
   LookupCallback(name, &callback_result);
-  if (callback_result.IsValid()) {
+  if (callback_result.IsFound()) {
     Object* obj = callback_result.GetCallbackObject();
     if (obj->IsAccessorInfo() &&
         AccessorInfo::cast(obj)->prohibits_overwriting()) {
@@ -2734,7 +2795,15 @@ Object* JSObject::DefineGetterSetter(String* name,
       case FAST_ELEMENTS:
         break;
       case PIXEL_ELEMENTS:
-        // Ignore getters and setters on pixel elements.
+      case EXTERNAL_BYTE_ELEMENTS:
+      case EXTERNAL_UNSIGNED_BYTE_ELEMENTS:
+      case EXTERNAL_SHORT_ELEMENTS:
+      case EXTERNAL_UNSIGNED_SHORT_ELEMENTS:
+      case EXTERNAL_INT_ELEMENTS:
+      case EXTERNAL_UNSIGNED_INT_ELEMENTS:
+      case EXTERNAL_FLOAT_ELEMENTS:
+        // Ignore getters and setters on pixel and external array
+        // elements.
         return Heap::undefined_value();
       case DICTIONARY_ELEMENTS: {
         // Lookup the index.
@@ -2760,11 +2829,20 @@ Object* JSObject::DefineGetterSetter(String* name,
     // Lookup the name.
     LookupResult result;
     LocalLookup(name, &result);
-    if (result.IsValid()) {
+    if (result.IsProperty()) {
       if (result.IsReadOnly()) return Heap::undefined_value();
       if (result.type() == CALLBACKS) {
         Object* obj = result.GetCallbackObject();
-        if (obj->IsFixedArray()) return obj;
+        if (obj->IsFixedArray()) {
+          // The object might be in fast mode even though it has
+          // a getter/setter.
+          Object* ok = NormalizeProperties(CLEAR_INOBJECT_PROPERTIES, 0);
+          if (ok->IsFailure()) return ok;
+
+          PropertyDetails details = PropertyDetails(attributes, CALLBACKS);
+          SetNormalizedProperty(name, obj, details);
+          return obj;
+        }
       }
     }
   }
@@ -2873,7 +2951,7 @@ Object* JSObject::LookupAccessor(String* name, bool is_getter) {
          obj = JSObject::cast(obj)->GetPrototype()) {
       LookupResult result;
       JSObject::cast(obj)->LocalLookup(name, &result);
-      if (result.IsValid()) {
+      if (result.IsProperty()) {
         if (result.IsReadOnly()) return Heap::undefined_value();
         if (result.type() == CALLBACKS) {
           Object* obj = result.GetCallbackObject();
@@ -3069,7 +3147,7 @@ static bool HasKey(FixedArray* array, Object* key) {
 
 
 Object* FixedArray::AddKeysFromJSArray(JSArray* array) {
-  ASSERT(!array->HasPixelElements());
+  ASSERT(!array->HasPixelElements() && !array->HasExternalArrayElements());
   switch (array->GetElementsKind()) {
     case JSObject::FAST_ELEMENTS:
       return UnionOfKeys(FixedArray::cast(array->elements()));
@@ -3121,8 +3199,9 @@ Object* FixedArray::UnionOfKeys(FixedArray* other) {
   Object* obj = Heap::AllocateFixedArray(len0 + extra);
   if (obj->IsFailure()) return obj;
   // Fill in the content
+  AssertNoAllocation no_gc;
   FixedArray* result = FixedArray::cast(obj);
-  WriteBarrierMode mode = result->GetWriteBarrierMode();
+  WriteBarrierMode mode = result->GetWriteBarrierMode(no_gc);
   for (int i = 0; i < len0; i++) {
     result->set(i, get(i), mode);
   }
@@ -3146,10 +3225,11 @@ Object* FixedArray::CopySize(int new_length) {
   if (obj->IsFailure()) return obj;
   FixedArray* result = FixedArray::cast(obj);
   // Copy the content
+  AssertNoAllocation no_gc;
   int len = length();
   if (new_length < len) len = new_length;
   result->set_map(map());
-  WriteBarrierMode mode = result->GetWriteBarrierMode();
+  WriteBarrierMode mode = result->GetWriteBarrierMode(no_gc);
   for (int i = 0; i < len; i++) {
     result->set(i, get(i), mode);
   }
@@ -3158,7 +3238,8 @@ Object* FixedArray::CopySize(int new_length) {
 
 
 void FixedArray::CopyTo(int pos, FixedArray* dest, int dest_pos, int len) {
-  WriteBarrierMode mode = dest->GetWriteBarrierMode();
+  AssertNoAllocation no_gc;
+  WriteBarrierMode mode = dest->GetWriteBarrierMode(no_gc);
   for (int index = 0; index < len; index++) {
     dest->set(dest_pos+index, get(pos+index), mode);
   }
@@ -3181,7 +3262,8 @@ Object* DescriptorArray::Allocate(int number_of_descriptors) {
     return Heap::empty_descriptor_array();
   }
   // Allocate the array of keys.
-  Object* array = Heap::AllocateFixedArray(ToKeyIndex(number_of_descriptors));
+  Object* array =
+      Heap::AllocateFixedArray(ToKeyIndex(number_of_descriptors));
   if (array->IsFailure()) return array;
   // Do not use DescriptorArray::cast on incomplete object.
   FixedArray* result = FixedArray::cast(array);
@@ -3191,8 +3273,7 @@ Object* DescriptorArray::Allocate(int number_of_descriptors) {
   if (array->IsFailure()) return array;
   result->set(kContentArrayIndex, array);
   result->set(kEnumerationIndexIndex,
-              Smi::FromInt(PropertyDetails::kInitialIndex),
-              SKIP_WRITE_BARRIER);
+              Smi::FromInt(PropertyDetails::kInitialIndex));
   return result;
 }
 
@@ -3465,7 +3546,7 @@ int String::Utf8Length() {
   // doesn't make Utf8Length faster, but it is very likely that
   // the string will be accessed later (for example by WriteUtf8)
   // so it's still a good idea.
-  TryFlattenIfNotFlat();
+  TryFlatten();
   Access<StringInputBuffer> buffer(&string_input_buffer);
   buffer->Reset(0, this);
   int result = 0;
@@ -3483,12 +3564,7 @@ Vector<const char> String::ToAsciiVector() {
   int length = this->length();
   StringRepresentationTag string_tag = StringShape(this).representation_tag();
   String* string = this;
-  if (string_tag == kSlicedStringTag) {
-    SlicedString* sliced = SlicedString::cast(string);
-    offset += sliced->start();
-    string = sliced->buffer();
-    string_tag = StringShape(string).representation_tag();
-  } else if (string_tag == kConsStringTag) {
+  if (string_tag == kConsStringTag) {
     ConsString* cons = ConsString::cast(string);
     ASSERT(cons->second()->length() == 0);
     string = cons->first();
@@ -3514,12 +3590,7 @@ Vector<const uc16> String::ToUC16Vector() {
   int length = this->length();
   StringRepresentationTag string_tag = StringShape(this).representation_tag();
   String* string = this;
-  if (string_tag == kSlicedStringTag) {
-    SlicedString* sliced = SlicedString::cast(string);
-    offset += sliced->start();
-    string = String::cast(sliced->buffer());
-    string_tag = StringShape(string).representation_tag();
-  } else if (string_tag == kConsStringTag) {
+  if (string_tag == kConsStringTag) {
     ConsString* cons = ConsString::cast(string);
     ASSERT(cons->second()->length() == 0);
     string = cons->first();
@@ -3610,17 +3681,6 @@ const uc16* String::GetTwoByteData(unsigned start) {
     case kExternalStringTag:
       return ExternalTwoByteString::cast(this)->
         ExternalTwoByteStringGetData(start);
-    case kSlicedStringTag: {
-      SlicedString* sliced_string = SlicedString::cast(this);
-      String* buffer = sliced_string->buffer();
-      if (StringShape(buffer).IsCons()) {
-        ConsString* cs = ConsString::cast(buffer);
-        // Flattened string.
-        ASSERT(cs->second()->length() == 0);
-        buffer = cs->first();
-      }
-      return buffer->GetTwoByteData(start + sliced_string->start());
-    }
     case kConsStringTag:
       UNREACHABLE();
       return NULL;
@@ -3775,22 +3835,6 @@ const unibrow::byte* ConsString::ConsStringReadBlock(ReadBlockBuffer* rbb,
 }
 
 
-const unibrow::byte* SlicedString::SlicedStringReadBlock(ReadBlockBuffer* rbb,
-                                                         unsigned* offset_ptr,
-                                                         unsigned max_chars) {
-  String* backing = buffer();
-  unsigned offset = start() + *offset_ptr;
-  unsigned length = backing->length();
-  if (max_chars > length - offset) {
-    max_chars = length - offset;
-  }
-  const unibrow::byte* answer =
-      String::ReadBlock(backing, rbb, &offset, max_chars);
-  *offset_ptr = offset - start();
-  return answer;
-}
-
-
 uint16_t ExternalAsciiString::ExternalAsciiStringGet(int index) {
   ASSERT(index >= 0 && index < length());
   return resource()->data()[index];
@@ -3914,10 +3958,6 @@ const unibrow::byte* String::ReadBlock(String* input,
       return ConsString::cast(input)->ConsStringReadBlock(rbb,
                                                           offset_ptr,
                                                           max_chars);
-    case kSlicedStringTag:
-      return SlicedString::cast(input)->SlicedStringReadBlock(rbb,
-                                                              offset_ptr,
-                                                              max_chars);
     case kExternalStringTag:
       if (input->IsAsciiRepresentation()) {
         return ExternalAsciiString::cast(input)->ExternalAsciiStringReadBlock(
@@ -3940,35 +3980,75 @@ const unibrow::byte* String::ReadBlock(String* input,
 }
 
 
-FlatStringReader* FlatStringReader::top_ = NULL;
+Relocatable* Relocatable::top_ = NULL;
+
+
+void Relocatable::PostGarbageCollectionProcessing() {
+  Relocatable* current = top_;
+  while (current != NULL) {
+    current->PostGarbageCollection();
+    current = current->prev_;
+  }
+}
+
+
+// Reserve space for statics needing saving and restoring.
+int Relocatable::ArchiveSpacePerThread() {
+  return sizeof(top_);
+}
+
+
+// Archive statics that are thread local.
+char* Relocatable::ArchiveState(char* to) {
+  *reinterpret_cast<Relocatable**>(to) = top_;
+  top_ = NULL;
+  return to + ArchiveSpacePerThread();
+}
+
+
+// Restore statics that are thread local.
+char* Relocatable::RestoreState(char* from) {
+  top_ = *reinterpret_cast<Relocatable**>(from);
+  return from + ArchiveSpacePerThread();
+}
+
+
+char* Relocatable::Iterate(ObjectVisitor* v, char* thread_storage) {
+  Relocatable* top = *reinterpret_cast<Relocatable**>(thread_storage);
+  Iterate(v, top);
+  return thread_storage + ArchiveSpacePerThread();
+}
+
+
+void Relocatable::Iterate(ObjectVisitor* v) {
+  Iterate(v, top_);
+}
+
+
+void Relocatable::Iterate(ObjectVisitor* v, Relocatable* top) {
+  Relocatable* current = top;
+  while (current != NULL) {
+    current->IterateInstance(v);
+    current = current->prev_;
+  }
+}
 
 
 FlatStringReader::FlatStringReader(Handle<String> str)
     : str_(str.location()),
-      length_(str->length()),
-      prev_(top_) {
-  top_ = this;
-  RefreshState();
+      length_(str->length()) {
+  PostGarbageCollection();
 }
 
 
 FlatStringReader::FlatStringReader(Vector<const char> input)
-    : str_(NULL),
+    : str_(0),
       is_ascii_(true),
       length_(input.length()),
-      start_(input.start()),
-      prev_(top_) {
-  top_ = this;
-}
+      start_(input.start()) { }
 
 
-FlatStringReader::~FlatStringReader() {
-  ASSERT_EQ(top_, this);
-  top_ = prev_;
-}
-
-
-void FlatStringReader::RefreshState() {
+void FlatStringReader::PostGarbageCollection() {
   if (str_ == NULL) return;
   Handle<String> str(str_);
   ASSERT(str->IsFlat());
@@ -3977,15 +4057,6 @@ void FlatStringReader::RefreshState() {
     start_ = str->ToAsciiVector().start();
   } else {
     start_ = str->ToUC16Vector().start();
-  }
-}
-
-
-void FlatStringReader::PostGarbageCollectionProcessing() {
-  FlatStringReader* current = top_;
-  while (current != NULL) {
-    current->RefreshState();
-    current = current->prev_;
   }
 }
 
@@ -4029,20 +4100,15 @@ void String::ReadBlockIntoBuffer(String* input,
                                                              offset_ptr,
                                                              max_chars);
       return;
-    case kSlicedStringTag:
-      SlicedString::cast(input)->SlicedStringReadBlockIntoBuffer(rbb,
-                                                                 offset_ptr,
-                                                                 max_chars);
-      return;
     case kExternalStringTag:
       if (input->IsAsciiRepresentation()) {
-         ExternalAsciiString::cast(input)->
-             ExternalAsciiStringReadBlockIntoBuffer(rbb, offset_ptr, max_chars);
-       } else {
-         ExternalTwoByteString::cast(input)->
-             ExternalTwoByteStringReadBlockIntoBuffer(rbb,
-                                                      offset_ptr,
-                                                      max_chars);
+        ExternalAsciiString::cast(input)->
+            ExternalAsciiStringReadBlockIntoBuffer(rbb, offset_ptr, max_chars);
+      } else {
+        ExternalTwoByteString::cast(input)->
+            ExternalTwoByteStringReadBlockIntoBuffer(rbb,
+                                                     offset_ptr,
+                                                     max_chars);
        }
        return;
     default:
@@ -4148,20 +4214,6 @@ void ConsString::ConsStringReadBlockIntoBuffer(ReadBlockBuffer* rbb,
 }
 
 
-void SlicedString::SlicedStringReadBlockIntoBuffer(ReadBlockBuffer* rbb,
-                                                   unsigned* offset_ptr,
-                                                   unsigned max_chars) {
-  String* backing = buffer();
-  unsigned offset = start() + *offset_ptr;
-  unsigned length = backing->length();
-  if (max_chars > length - offset) {
-    max_chars = length - offset;
-  }
-  String::ReadBlockIntoBuffer(backing, rbb, &offset, max_chars);
-  *offset_ptr = offset - start();
-}
-
-
 void ConsString::ConsStringIterateBody(ObjectVisitor* v) {
   IteratePointers(v, kFirstOffset, kSecondOffset + kPointerSize);
 }
@@ -4240,15 +4292,6 @@ void String::WriteToFlat(String* src,
                   to - from);
         return;
       }
-      case kAsciiStringTag | kSlicedStringTag:
-      case kTwoByteStringTag | kSlicedStringTag: {
-        SlicedString* sliced_string = SlicedString::cast(source);
-        int start = sliced_string->start();
-        from += start;
-        to += start;
-        source = String::cast(sliced_string->buffer());
-        break;
-      }
       case kAsciiStringTag | kConsStringTag:
       case kTwoByteStringTag | kConsStringTag: {
         ConsString* cons_string = ConsString::cast(source);
@@ -4284,18 +4327,23 @@ void String::WriteToFlat(String* src,
 }
 
 
-void SlicedString::SlicedStringIterateBody(ObjectVisitor* v) {
-  IteratePointer(v, kBufferOffset);
+#define FIELD_ADDR(p, offset) \
+  (reinterpret_cast<byte*>(p) + offset - kHeapObjectTag)
+
+void ExternalAsciiString::ExternalAsciiStringIterateBody(ObjectVisitor* v) {
+  typedef v8::String::ExternalAsciiStringResource Resource;
+  v->VisitExternalAsciiString(
+      reinterpret_cast<Resource**>(FIELD_ADDR(this, kResourceOffset)));
 }
 
 
-uint16_t SlicedString::SlicedStringGet(int index) {
-  ASSERT(index >= 0 && index < this->length());
-  // Delegate to the buffer string.
-  String* underlying = buffer();
-  return underlying->Get(start() + index);
+void ExternalTwoByteString::ExternalTwoByteStringIterateBody(ObjectVisitor* v) {
+  typedef v8::String::ExternalStringResource Resource;
+  v->VisitExternalTwoByteString(
+      reinterpret_cast<Resource**>(FIELD_ADDR(this, kResourceOffset)));
 }
 
+#undef FIELD_ADDR
 
 template <typename IteratorA, typename IteratorB>
 static inline bool CompareStringContents(IteratorA* ia, IteratorB* ib) {
@@ -4440,23 +4488,11 @@ bool String::MarkAsUndetectable() {
   if (StringShape(this).IsSymbol()) return false;
 
   Map* map = this->map();
-  if (map == Heap::short_string_map()) {
-    this->set_map(Heap::undetectable_short_string_map());
+  if (map == Heap::string_map()) {
+    this->set_map(Heap::undetectable_string_map());
     return true;
-  } else if (map == Heap::medium_string_map()) {
-    this->set_map(Heap::undetectable_medium_string_map());
-    return true;
-  } else if (map == Heap::long_string_map()) {
-    this->set_map(Heap::undetectable_long_string_map());
-    return true;
-  } else if (map == Heap::short_ascii_string_map()) {
-    this->set_map(Heap::undetectable_short_ascii_string_map());
-    return true;
-  } else if (map == Heap::medium_ascii_string_map()) {
-    this->set_map(Heap::undetectable_medium_ascii_string_map());
-    return true;
-  } else if (map == Heap::long_ascii_string_map()) {
-    this->set_map(Heap::undetectable_long_ascii_string_map());
+  } else if (map == Heap::ascii_string_map()) {
+    this->set_map(Heap::undetectable_ascii_string_map());
     return true;
   }
   // Rest cannot be marked as undetectable
@@ -4479,17 +4515,17 @@ bool String::IsEqualTo(Vector<const char> str) {
 
 uint32_t String::ComputeAndSetHash() {
   // Should only be called if hash code has not yet been computed.
-  ASSERT(!(length_field() & kHashComputedMask));
+  ASSERT(!(hash_field() & kHashComputedMask));
 
   // Compute the hash code.
   StringInputBuffer buffer(this);
-  uint32_t field = ComputeLengthAndHashField(&buffer, length());
+  uint32_t field = ComputeHashField(&buffer, length());
 
   // Store the hash code in the object.
-  set_length_field(field);
+  set_hash_field(field);
 
   // Check the hash code is there.
-  ASSERT(length_field() & kHashComputedMask);
+  ASSERT(hash_field() & kHashComputedMask);
   uint32_t result = field >> kHashShift;
   ASSERT(result != 0);  // Ensure that the hash value of 0 is never computed.
   return result;
@@ -4529,9 +4565,10 @@ bool String::ComputeArrayIndex(unibrow::CharacterStream* buffer,
 bool String::SlowAsArrayIndex(uint32_t* index) {
   if (length() <= kMaxCachedArrayIndexLength) {
     Hash();  // force computation of hash code
-    uint32_t field = length_field();
+    uint32_t field = hash_field();
     if ((field & kIsArrayIndexMask) == 0) return false;
-    *index = (field & ((1 << kShortLengthShift) - 1)) >> kLongLengthShift;
+    // Isolate the array index form the full hash field.
+    *index = (kArrayIndexHashMask & field) >> kHashShift;
     return true;
   } else {
     StringInputBuffer buffer(this);
@@ -4540,37 +4577,42 @@ bool String::SlowAsArrayIndex(uint32_t* index) {
 }
 
 
-static inline uint32_t HashField(uint32_t hash, bool is_array_index) {
+static inline uint32_t HashField(uint32_t hash,
+                                 bool is_array_index,
+                                 int length = -1) {
   uint32_t result =
-      (hash << String::kLongLengthShift) | String::kHashComputedMask;
-  if (is_array_index) result |= String::kIsArrayIndexMask;
+      (hash << String::kHashShift) | String::kHashComputedMask;
+  if (is_array_index) {
+    // For array indexes mix the length into the hash as an array index could
+    // be zero.
+    ASSERT(length > 0);
+    ASSERT(TenToThe(String::kMaxCachedArrayIndexLength) <
+           (1 << String::kArrayIndexValueBits));
+    result |= String::kIsArrayIndexMask;
+    result |= length << String::kArrayIndexHashLengthShift;
+  }
   return result;
 }
 
 
 uint32_t StringHasher::GetHashField() {
   ASSERT(is_valid());
-  if (length_ <= String::kMaxShortStringSize) {
-    uint32_t payload;
+  if (length_ <= String::kMaxHashCalcLength) {
     if (is_array_index()) {
-      payload = v8::internal::HashField(array_index(), true);
+      return v8::internal::HashField(array_index(), true, length_);
     } else {
-      payload = v8::internal::HashField(GetHash(), false);
+      return v8::internal::HashField(GetHash(), false);
     }
-    return (payload & ((1 << String::kShortLengthShift) - 1)) |
-           (length_ << String::kShortLengthShift);
-  } else if (length_ <= String::kMaxMediumStringSize) {
     uint32_t payload = v8::internal::HashField(GetHash(), false);
-    return (payload & ((1 << String::kMediumLengthShift) - 1)) |
-           (length_ << String::kMediumLengthShift);
+    return payload;
   } else {
     return v8::internal::HashField(length_, false);
   }
 }
 
 
-uint32_t String::ComputeLengthAndHashField(unibrow::CharacterStream* buffer,
-                                           int length) {
+uint32_t String::ComputeHashField(unibrow::CharacterStream* buffer,
+                                  int length) {
   StringHasher hasher(length);
 
   // Very long strings have a trivial hash that doesn't inspect the
@@ -4595,43 +4637,10 @@ uint32_t String::ComputeLengthAndHashField(unibrow::CharacterStream* buffer,
 }
 
 
-Object* String::Slice(int start, int end) {
+Object* String::SubString(int start, int end, PretenureFlag pretenure) {
   if (start == 0 && end == length()) return this;
-  if (StringShape(this).representation_tag() == kSlicedStringTag) {
-    // Translate slices of a SlicedString into slices of the
-    // underlying string buffer.
-    SlicedString* str = SlicedString::cast(this);
-    String* buf = str->buffer();
-    return Heap::AllocateSlicedString(buf,
-                                      str->start() + start,
-                                      str->start() + end);
-  }
-  Object* result = Heap::AllocateSlicedString(this, start, end);
-  if (result->IsFailure()) {
-    return result;
-  }
-  // Due to the way we retry after GC on allocation failure we are not allowed
-  // to fail on allocation after this point.  This is the one-allocation rule.
-
-  // Try to flatten a cons string that is under the sliced string.
-  // This is to avoid memory leaks and possible stack overflows caused by
-  // building 'towers' of sliced strings on cons strings.
-  // This may fail due to an allocation failure (when a GC is needed), but it
-  // will succeed often enough to avoid the problem.  We only have to do this
-  // if Heap::AllocateSlicedString actually returned a SlicedString.  It will
-  // return flat strings for small slices for efficiency reasons.
-  String* answer = String::cast(result);
-  if (StringShape(answer).IsSliced() &&
-      StringShape(this).representation_tag() == kConsStringTag) {
-    TryFlatten();
-    // If the flatten succeeded we might as well make the sliced string point
-    // to the flat string rather than the cons string.
-    String* second = ConsString::cast(this)->second();
-    if (second->length() == 0) {
-      SlicedString::cast(answer)->set_buffer(ConsString::cast(this)->first());
-    }
-  }
-  return answer;
+  Object* result = Heap::AllocateSubString(this, start, end, pretenure);
+  return result;
 }
 
 
@@ -4692,8 +4701,8 @@ void Map::ClearNonLiveTransitions(Object* real_prototype) {
       ASSERT(target->IsHeapObject());
       if (!target->IsMarked()) {
         ASSERT(target->IsMap());
-        contents->set(i + 1, NullDescriptorDetails, SKIP_WRITE_BARRIER);
-        contents->set(i, Heap::null_value(), SKIP_WRITE_BARRIER);
+        contents->set(i + 1, NullDescriptorDetails);
+        contents->set_null(i);
         ASSERT(target->prototype() == this ||
                target->prototype() == real_prototype);
         // Getter prototype() is read-only, set_prototype() has side effects.
@@ -4810,13 +4819,43 @@ int SharedFunctionInfo::CalculateInObjectProperties() {
 }
 
 
+bool SharedFunctionInfo::CanGenerateInlineConstructor(Object* prototype) {
+  // Check the basic conditions for generating inline constructor code.
+  if (!FLAG_inline_new
+      || !has_only_simple_this_property_assignments()
+      || this_property_assignments_count() == 0) {
+    return false;
+  }
+
+  // If the prototype is null inline constructors cause no problems.
+  if (!prototype->IsJSObject()) {
+    ASSERT(prototype->IsNull());
+    return true;
+  }
+
+  // Traverse the proposed prototype chain looking for setters for properties of
+  // the same names as are set by the inline constructor.
+  for (Object* obj = prototype;
+       obj != Heap::null_value();
+       obj = obj->GetPrototype()) {
+    JSObject* js_object = JSObject::cast(obj);
+    for (int i = 0; i < this_property_assignments_count(); i++) {
+      LookupResult result;
+      String* name = GetThisPropertyAssignmentName(i);
+      js_object->LocalLookupRealNamedProperty(name, &result);
+      if (result.IsProperty() && result.type() == CALLBACKS) {
+        return false;
+      }
+    }
+  }
+
+  return true;
+}
+
+
 void SharedFunctionInfo::SetThisPropertyAssignmentsInfo(
-    bool only_this_property_assignments,
     bool only_simple_this_property_assignments,
     FixedArray* assignments) {
-  set_compiler_hints(BooleanBit::set(compiler_hints(),
-                                     kHasOnlyThisPropertyAssignments,
-                                     only_this_property_assignments));
   set_compiler_hints(BooleanBit::set(compiler_hints(),
                                      kHasOnlySimpleThisPropertyAssignments,
                                      only_simple_this_property_assignments));
@@ -4826,9 +4865,6 @@ void SharedFunctionInfo::SetThisPropertyAssignmentsInfo(
 
 
 void SharedFunctionInfo::ClearThisPropertyAssignmentsInfo() {
-  set_compiler_hints(BooleanBit::set(compiler_hints(),
-                                     kHasOnlyThisPropertyAssignments,
-                                     false));
   set_compiler_hints(BooleanBit::set(compiler_hints(),
                                      kHasOnlySimpleThisPropertyAssignments,
                                      false));
@@ -4872,7 +4908,6 @@ Object* SharedFunctionInfo::GetThisPropertyAssignmentConstant(int index) {
 }
 
 
-
 // Support function for printing the source code to a StringStream
 // without any allocation in the heap.
 void SharedFunctionInfo::SourceCodePrint(StringStream* accumulator,
@@ -4884,7 +4919,7 @@ void SharedFunctionInfo::SourceCodePrint(StringStream* accumulator,
     return;
   }
 
-  // Get the slice of the source for this function.
+  // Get the source for the script which this function came from.
   // Don't use String::cast because we don't want more assertion errors while
   // we are already creating a stack dump.
   String* script_source =
@@ -4924,60 +4959,26 @@ void SharedFunctionInfo::SharedFunctionInfoIterateBody(ObjectVisitor* v) {
 }
 
 
-void ObjectVisitor::BeginCodeIteration(Code* code) {
-  ASSERT(code->ic_flag() == Code::IC_TARGET_IS_OBJECT);
-}
-
-
 void ObjectVisitor::VisitCodeTarget(RelocInfo* rinfo) {
   ASSERT(RelocInfo::IsCodeTarget(rinfo->rmode()));
-  VisitPointer(rinfo->target_object_address());
+  Object* target = Code::GetCodeFromTargetAddress(rinfo->target_address());
+  Object* old_target = target;
+  VisitPointer(&target);
+  CHECK_EQ(target, old_target);  // VisitPointer doesn't change Code* *target.
 }
 
 
 void ObjectVisitor::VisitDebugTarget(RelocInfo* rinfo) {
-  ASSERT(RelocInfo::IsJSReturn(rinfo->rmode()) && rinfo->IsCallInstruction());
-  VisitPointer(rinfo->call_object_address());
-}
-
-
-// Convert relocatable targets from address to code object address. This is
-// mainly IC call targets but for debugging straight-line code can be replaced
-// with a call instruction which also has to be relocated.
-void Code::ConvertICTargetsFromAddressToObject() {
-  ASSERT(ic_flag() == IC_TARGET_IS_ADDRESS);
-
-  for (RelocIterator it(this, RelocInfo::kCodeTargetMask);
-       !it.done(); it.next()) {
-    Address ic_addr = it.rinfo()->target_address();
-    ASSERT(ic_addr != NULL);
-    HeapObject* code = HeapObject::FromAddress(ic_addr - Code::kHeaderSize);
-    ASSERT(code->IsHeapObject());
-    it.rinfo()->set_target_object(code);
-  }
-
-#ifdef ENABLE_DEBUGGER_SUPPORT
-  if (Debug::has_break_points()) {
-    for (RelocIterator it(this, RelocInfo::ModeMask(RelocInfo::JS_RETURN));
-         !it.done();
-         it.next()) {
-      if (it.rinfo()->IsCallInstruction()) {
-        Address addr = it.rinfo()->call_address();
-        ASSERT(addr != NULL);
-        HeapObject* code = HeapObject::FromAddress(addr - Code::kHeaderSize);
-        ASSERT(code->IsHeapObject());
-        it.rinfo()->set_call_object(code);
-      }
-    }
-  }
-#endif
-  set_ic_flag(IC_TARGET_IS_OBJECT);
+  ASSERT(RelocInfo::IsJSReturn(rinfo->rmode()) &&
+         rinfo->IsPatchedReturnSequence());
+  Object* target = Code::GetCodeFromTargetAddress(rinfo->call_address());
+  Object* old_target = target;
+  VisitPointer(&target);
+  CHECK_EQ(target, old_target);  // VisitPointer doesn't change Code* *target.
 }
 
 
 void Code::CodeIterateBody(ObjectVisitor* v) {
-  v->BeginCodeIteration(this);
-
   int mode_mask = RelocInfo::kCodeTargetMask |
                   RelocInfo::ModeMask(RelocInfo::EMBEDDED_OBJECT) |
                   RelocInfo::ModeMask(RelocInfo::EXTERNAL_REFERENCE) |
@@ -4995,7 +4996,7 @@ void Code::CodeIterateBody(ObjectVisitor* v) {
 #ifdef ENABLE_DEBUGGER_SUPPORT
     } else if (Debug::has_break_points() &&
                RelocInfo::IsJSReturn(rmode) &&
-               it.rinfo()->IsCallInstruction()) {
+               it.rinfo()->IsPatchedReturnSequence()) {
       v->VisitDebugTarget(it.rinfo());
 #endif
     } else if (rmode == RelocInfo::RUNTIME_ENTRY) {
@@ -5004,42 +5005,10 @@ void Code::CodeIterateBody(ObjectVisitor* v) {
   }
 
   ScopeInfo<>::IterateScopeInfo(this, v);
-
-  v->EndCodeIteration(this);
 }
 
 
-void Code::ConvertICTargetsFromObjectToAddress() {
-  ASSERT(ic_flag() == IC_TARGET_IS_OBJECT);
-
-  for (RelocIterator it(this, RelocInfo::kCodeTargetMask);
-       !it.done(); it.next()) {
-    // We cannot use the safe cast (Code::cast) here, because we may be in
-    // the middle of relocating old objects during GC and the map pointer in
-    // the code object may be mangled
-    Code* code = reinterpret_cast<Code*>(it.rinfo()->target_object());
-    ASSERT((code != NULL) && code->IsHeapObject());
-    it.rinfo()->set_target_address(code->instruction_start());
-  }
-
-#ifdef ENABLE_DEBUGGER_SUPPORT
-  if (Debug::has_break_points()) {
-    for (RelocIterator it(this, RelocInfo::ModeMask(RelocInfo::JS_RETURN));
-         !it.done();
-         it.next()) {
-      if (it.rinfo()->IsCallInstruction()) {
-        Code* code = reinterpret_cast<Code*>(it.rinfo()->call_object());
-        ASSERT((code != NULL) && code->IsHeapObject());
-        it.rinfo()->set_call_address(code->instruction_start());
-      }
-    }
-  }
-#endif
-  set_ic_flag(IC_TARGET_IS_ADDRESS);
-}
-
-
-void Code::Relocate(int delta) {
+void Code::Relocate(intptr_t delta) {
   for (RelocIterator it(this, RelocInfo::kApplyMask); !it.done(); it.next()) {
     it.rinfo()->apply(delta);
   }
@@ -5065,19 +5034,20 @@ void Code::CopyFrom(const CodeDesc& desc) {
           desc.reloc_size);
 
   // unbox handles and relocate
-  int delta = instruction_start() - desc.buffer;
+  intptr_t delta = instruction_start() - desc.buffer;
   int mode_mask = RelocInfo::kCodeTargetMask |
                   RelocInfo::ModeMask(RelocInfo::EMBEDDED_OBJECT) |
                   RelocInfo::kApplyMask;
+  Assembler* origin = desc.origin;  // Needed to find target_object on X64.
   for (RelocIterator it(this, mode_mask); !it.done(); it.next()) {
     RelocInfo::Mode mode = it.rinfo()->rmode();
     if (mode == RelocInfo::EMBEDDED_OBJECT) {
-      Object** p = reinterpret_cast<Object**>(it.rinfo()->target_object());
+      Handle<Object> p = it.rinfo()->target_object_handle(origin);
       it.rinfo()->set_target_object(*p);
     } else if (RelocInfo::IsCodeTarget(mode)) {
       // rewrite code handles in inline cache targets to direct
       // pointers to the first instruction in the code object
-      Object** p = reinterpret_cast<Object**>(it.rinfo()->target_object());
+      Handle<Object> p = it.rinfo()->target_object_handle(origin);
       Code* code = Code::cast(*p);
       it.rinfo()->set_target_address(code->instruction_start());
     } else {
@@ -5104,8 +5074,9 @@ int Code::SourcePosition(Address pc) {
     // Only look at positions after the current pc.
     if (it.rinfo()->pc() < pc) {
       // Get position and distance.
-      int dist = pc - it.rinfo()->pc();
-      int pos = it.rinfo()->data();
+
+      int dist = static_cast<int>(pc - it.rinfo()->pc());
+      int pos = static_cast<int>(it.rinfo()->data());
       // If this position is closer than the current candidate or if it has the
       // same distance as the current candidate and the position is higher then
       // this position is the new candidate.
@@ -5132,7 +5103,7 @@ int Code::SourceStatementPosition(Address pc) {
   RelocIterator it(this, RelocInfo::kPositionMask);
   while (!it.done()) {
     if (RelocInfo::IsStatementPosition(it.rinfo()->rmode())) {
-      int p = it.rinfo()->data();
+      int p = static_cast<int>(it.rinfo()->data());
       if (statement_position < p && p <= position) {
         statement_position = p;
       }
@@ -5217,14 +5188,15 @@ void Code::Disassemble(const char* name) {
 
 
 void JSObject::SetFastElements(FixedArray* elems) {
-  // We should never end in here with a pixel array.
-  ASSERT(!HasPixelElements());
+  // We should never end in here with a pixel or external array.
+  ASSERT(!HasPixelElements() && !HasExternalArrayElements());
 #ifdef DEBUG
   // Check the provided array is filled with the_hole.
   uint32_t len = static_cast<uint32_t>(elems->length());
   for (uint32_t i = 0; i < len; i++) ASSERT(elems->get(i)->IsTheHole());
 #endif
-  WriteBarrierMode mode = elems->GetWriteBarrierMode();
+  AssertNoAllocation no_gc;
+  WriteBarrierMode mode = elems->GetWriteBarrierMode(no_gc);
   switch (GetElementsKind()) {
     case FAST_ELEMENTS: {
       FixedArray* old_elements = FixedArray::cast(elements());
@@ -5255,8 +5227,8 @@ void JSObject::SetFastElements(FixedArray* elems) {
 
 
 Object* JSObject::SetSlowElements(Object* len) {
-  // We should never end in here with a pixel array.
-  ASSERT(!HasPixelElements());
+  // We should never end in here with a pixel or external array.
+  ASSERT(!HasPixelElements() && !HasExternalArrayElements());
 
   uint32_t new_length = static_cast<uint32_t>(len->Number());
 
@@ -5291,7 +5263,7 @@ Object* JSObject::SetSlowElements(Object* len) {
 
 Object* JSArray::Initialize(int capacity) {
   ASSERT(capacity >= 0);
-  set_length(Smi::FromInt(0), SKIP_WRITE_BARRIER);
+  set_length(Smi::FromInt(0));
   FixedArray* new_elements;
   if (capacity == 0) {
     new_elements = Heap::empty_fixed_array();
@@ -5309,9 +5281,7 @@ void JSArray::Expand(int required_size) {
   Handle<JSArray> self(this);
   Handle<FixedArray> old_backing(FixedArray::cast(elements()));
   int old_size = old_backing->length();
-  // Doubling in size would be overkill, but leave some slack to avoid
-  // constantly growing.
-  int new_size = required_size + (required_size >> 3);
+  int new_size = required_size > old_size ? required_size : old_size;
   Handle<FixedArray> new_backing = Factory::NewFixedArray(new_size);
   // Can't use this any more now because we may have had a GC!
   for (int i = 0; i < old_size; i++) new_backing->set(i, old_backing->get(i));
@@ -5334,8 +5304,8 @@ static Object* ArrayLengthRangeError() {
 
 
 Object* JSObject::SetElementsLength(Object* len) {
-  // We should never end in here with a pixel array.
-  ASSERT(!HasPixelElements());
+  // We should never end in here with a pixel or external array.
+  ASSERT(AllowsSetElementsLength());
 
   Object* smi_length = len->ToSmi();
   if (smi_length->IsSmi()) {
@@ -5353,7 +5323,7 @@ Object* JSObject::SetElementsLength(Object* len) {
             for (int i = value; i < old_length; i++) {
               FixedArray::cast(elements())->set_the_hole(i);
             }
-            JSArray::cast(this)->set_length(smi_length, SKIP_WRITE_BARRIER);
+            JSArray::cast(this)->set_length(Smi::cast(smi_length));
           }
           return this;
         }
@@ -5363,8 +5333,9 @@ Object* JSObject::SetElementsLength(Object* len) {
             !ShouldConvertToSlowElements(new_capacity)) {
           Object* obj = Heap::AllocateFixedArrayWithHoles(new_capacity);
           if (obj->IsFailure()) return obj;
-          if (IsJSArray()) JSArray::cast(this)->set_length(smi_length,
-                                                           SKIP_WRITE_BARRIER);
+          if (IsJSArray()) {
+            JSArray::cast(this)->set_length(Smi::cast(smi_length));
+          }
           SetFastElements(FixedArray::cast(obj));
           return this;
         }
@@ -5383,7 +5354,7 @@ Object* JSObject::SetElementsLength(Object* len) {
             static_cast<uint32_t>(JSArray::cast(this)->length()->Number());
             element_dictionary()->RemoveNumberEntries(value, old_length);
           }
-          JSArray::cast(this)->set_length(smi_length, SKIP_WRITE_BARRIER);
+          JSArray::cast(this)->set_length(Smi::cast(smi_length));
         }
         return this;
       }
@@ -5408,10 +5379,51 @@ Object* JSObject::SetElementsLength(Object* len) {
   Object* obj = Heap::AllocateFixedArray(1);
   if (obj->IsFailure()) return obj;
   FixedArray::cast(obj)->set(0, len);
-  if (IsJSArray()) JSArray::cast(this)->set_length(Smi::FromInt(1),
-                                                   SKIP_WRITE_BARRIER);
+  if (IsJSArray()) JSArray::cast(this)->set_length(Smi::FromInt(1));
   set_elements(FixedArray::cast(obj));
   return this;
+}
+
+
+Object* JSObject::SetPrototype(Object* value,
+                               bool skip_hidden_prototypes) {
+  // Silently ignore the change if value is not a JSObject or null.
+  // SpiderMonkey behaves this way.
+  if (!value->IsJSObject() && !value->IsNull()) return value;
+
+  // Before we can set the prototype we need to be sure
+  // prototype cycles are prevented.
+  // It is sufficient to validate that the receiver is not in the new prototype
+  // chain.
+  for (Object* pt = value; pt != Heap::null_value(); pt = pt->GetPrototype()) {
+    if (JSObject::cast(pt) == this) {
+      // Cycle detected.
+      HandleScope scope;
+      return Top::Throw(*Factory::NewError("cyclic_proto",
+                                           HandleVector<Object>(NULL, 0)));
+    }
+  }
+
+  JSObject* real_receiver = this;
+
+  if (skip_hidden_prototypes) {
+    // Find the first object in the chain whose prototype object is not
+    // hidden and set the new prototype on that object.
+    Object* current_proto = real_receiver->GetPrototype();
+    while (current_proto->IsJSObject() &&
+          JSObject::cast(current_proto)->map()->is_hidden_prototype()) {
+      real_receiver = JSObject::cast(current_proto);
+      current_proto = current_proto->GetPrototype();
+    }
+  }
+
+  // Set the new prototype of the object.
+  Object* new_map = real_receiver->map()->CopyDropTransitions();
+  if (new_map->IsFailure()) return new_map;
+  Map::cast(new_map)->set_prototype(value);
+  real_receiver->set_map(Map::cast(new_map));
+
+  return value;
 }
 
 
@@ -5432,6 +5444,20 @@ bool JSObject::HasElementPostInterceptor(JSObject* receiver, uint32_t index) {
       // TODO(iposva): Add testcase.
       PixelArray* pixels = PixelArray::cast(elements());
       if (index < static_cast<uint32_t>(pixels->length())) {
+        return true;
+      }
+      break;
+    }
+    case EXTERNAL_BYTE_ELEMENTS:
+    case EXTERNAL_UNSIGNED_BYTE_ELEMENTS:
+    case EXTERNAL_SHORT_ELEMENTS:
+    case EXTERNAL_UNSIGNED_SHORT_ELEMENTS:
+    case EXTERNAL_INT_ELEMENTS:
+    case EXTERNAL_UNSIGNED_INT_ELEMENTS:
+    case EXTERNAL_FLOAT_ELEMENTS: {
+      // TODO(kbr): Add testcase.
+      ExternalArray* array = ExternalArray::cast(elements());
+      if (index < static_cast<uint32_t>(array->length())) {
         return true;
       }
       break;
@@ -5465,10 +5491,8 @@ bool JSObject::HasElementWithInterceptor(JSObject* receiver, uint32_t index) {
   Handle<InterceptorInfo> interceptor(GetIndexedInterceptor());
   Handle<JSObject> receiver_handle(receiver);
   Handle<JSObject> holder_handle(this);
-  Handle<Object> data_handle(interceptor->data());
-  v8::AccessorInfo info(v8::Utils::ToLocal(receiver_handle),
-                        v8::Utils::ToLocal(data_handle),
-                        v8::Utils::ToLocal(holder_handle));
+  CustomArguments args(interceptor->data(), receiver, this);
+  v8::AccessorInfo info(args.end());
   if (!interceptor->query()->IsUndefined()) {
     v8::IndexedPropertyQuery query =
         v8::ToCData<v8::IndexedPropertyQuery>(interceptor->query());
@@ -5525,6 +5549,16 @@ bool JSObject::HasLocalElement(uint32_t index) {
       PixelArray* pixels = PixelArray::cast(elements());
       return (index < static_cast<uint32_t>(pixels->length()));
     }
+    case EXTERNAL_BYTE_ELEMENTS:
+    case EXTERNAL_UNSIGNED_BYTE_ELEMENTS:
+    case EXTERNAL_SHORT_ELEMENTS:
+    case EXTERNAL_UNSIGNED_SHORT_ELEMENTS:
+    case EXTERNAL_INT_ELEMENTS:
+    case EXTERNAL_UNSIGNED_INT_ELEMENTS:
+    case EXTERNAL_FLOAT_ELEMENTS: {
+      ExternalArray* array = ExternalArray::cast(elements());
+      return (index < static_cast<uint32_t>(array->length()));
+    }
     case DICTIONARY_ELEMENTS: {
       return element_dictionary()->FindEntry(index)
           != NumberDictionary::kNotFound;
@@ -5568,6 +5602,19 @@ bool JSObject::HasElementWithReceiver(JSObject* receiver, uint32_t index) {
       }
       break;
     }
+    case EXTERNAL_BYTE_ELEMENTS:
+    case EXTERNAL_UNSIGNED_BYTE_ELEMENTS:
+    case EXTERNAL_SHORT_ELEMENTS:
+    case EXTERNAL_UNSIGNED_SHORT_ELEMENTS:
+    case EXTERNAL_INT_ELEMENTS:
+    case EXTERNAL_UNSIGNED_INT_ELEMENTS:
+    case EXTERNAL_FLOAT_ELEMENTS: {
+      ExternalArray* array = ExternalArray::cast(elements());
+      if (index < static_cast<uint32_t>(array->length())) {
+        return true;
+      }
+      break;
+    }
     case DICTIONARY_ELEMENTS: {
       if (element_dictionary()->FindEntry(index)
           != NumberDictionary::kNotFound) {
@@ -5600,11 +5647,9 @@ Object* JSObject::SetElementWithInterceptor(uint32_t index, Object* value) {
   if (!interceptor->setter()->IsUndefined()) {
     v8::IndexedPropertySetter setter =
         v8::ToCData<v8::IndexedPropertySetter>(interceptor->setter());
-    Handle<Object> data_handle(interceptor->data());
     LOG(ApiIndexedPropertyAccess("interceptor-indexed-set", this, index));
-    v8::AccessorInfo info(v8::Utils::ToLocal(this_handle),
-                          v8::Utils::ToLocal(data_handle),
-                          v8::Utils::ToLocal(this_handle));
+    CustomArguments args(interceptor->data(), this, this);
+    v8::AccessorInfo info(args.end());
     v8::Handle<v8::Value> result;
     {
       // Leaving JavaScript.
@@ -5646,8 +5691,7 @@ Object* JSObject::SetFastElement(uint32_t index, Object* value) {
       CHECK(Array::IndexFromObject(JSArray::cast(this)->length(),
                                    &array_length));
       if (index >= array_length) {
-        JSArray::cast(this)->set_length(Smi::FromInt(index + 1),
-                                        SKIP_WRITE_BARRIER);
+        JSArray::cast(this)->set_length(Smi::FromInt(index + 1));
       }
     }
     return value;
@@ -5663,8 +5707,9 @@ Object* JSObject::SetFastElement(uint32_t index, Object* value) {
       Object* obj = Heap::AllocateFixedArrayWithHoles(new_capacity);
       if (obj->IsFailure()) return obj;
       SetFastElements(FixedArray::cast(obj));
-      if (IsJSArray()) JSArray::cast(this)->set_length(Smi::FromInt(index + 1),
-                                                       SKIP_WRITE_BARRIER);
+      if (IsJSArray()) {
+        JSArray::cast(this)->set_length(Smi::FromInt(index + 1));
+      }
       FixedArray::cast(elements())->set(index, value);
       return value;
     }
@@ -5709,6 +5754,37 @@ Object* JSObject::SetElementWithoutInterceptor(uint32_t index, Object* value) {
     case PIXEL_ELEMENTS: {
       PixelArray* pixels = PixelArray::cast(elements());
       return pixels->SetValue(index, value);
+    }
+    case EXTERNAL_BYTE_ELEMENTS: {
+      ExternalByteArray* array = ExternalByteArray::cast(elements());
+      return array->SetValue(index, value);
+    }
+    case EXTERNAL_UNSIGNED_BYTE_ELEMENTS: {
+      ExternalUnsignedByteArray* array =
+          ExternalUnsignedByteArray::cast(elements());
+      return array->SetValue(index, value);
+    }
+    case EXTERNAL_SHORT_ELEMENTS: {
+      ExternalShortArray* array = ExternalShortArray::cast(elements());
+      return array->SetValue(index, value);
+    }
+    case EXTERNAL_UNSIGNED_SHORT_ELEMENTS: {
+      ExternalUnsignedShortArray* array =
+          ExternalUnsignedShortArray::cast(elements());
+      return array->SetValue(index, value);
+    }
+    case EXTERNAL_INT_ELEMENTS: {
+      ExternalIntArray* array = ExternalIntArray::cast(elements());
+      return array->SetValue(index, value);
+    }
+    case EXTERNAL_UNSIGNED_INT_ELEMENTS: {
+      ExternalUnsignedIntArray* array =
+          ExternalUnsignedIntArray::cast(elements());
+      return array->SetValue(index, value);
+    }
+    case EXTERNAL_FLOAT_ELEMENTS: {
+      ExternalFloatArray* array = ExternalFloatArray::cast(elements());
+      return array->SetValue(index, value);
     }
     case DICTIONARY_ELEMENTS: {
       // Insert element in the dictionary.
@@ -5827,6 +5903,17 @@ Object* JSObject::GetElementPostInterceptor(JSObject* receiver,
       UNIMPLEMENTED();
       break;
     }
+    case EXTERNAL_BYTE_ELEMENTS:
+    case EXTERNAL_UNSIGNED_BYTE_ELEMENTS:
+    case EXTERNAL_SHORT_ELEMENTS:
+    case EXTERNAL_UNSIGNED_SHORT_ELEMENTS:
+    case EXTERNAL_INT_ELEMENTS:
+    case EXTERNAL_UNSIGNED_INT_ELEMENTS:
+    case EXTERNAL_FLOAT_ELEMENTS: {
+      // TODO(kbr): Add testcase and implement.
+      UNIMPLEMENTED();
+      break;
+    }
     case DICTIONARY_ELEMENTS: {
       NumberDictionary* dictionary = element_dictionary();
       int entry = dictionary->FindEntry(index);
@@ -5872,13 +5959,11 @@ Object* JSObject::GetElementWithInterceptor(JSObject* receiver,
   Handle<JSObject> holder_handle(this);
 
   if (!interceptor->getter()->IsUndefined()) {
-    Handle<Object> data_handle(interceptor->data());
     v8::IndexedPropertyGetter getter =
         v8::ToCData<v8::IndexedPropertyGetter>(interceptor->getter());
     LOG(ApiIndexedPropertyAccess("interceptor-indexed-get", this, index));
-    v8::AccessorInfo info(v8::Utils::ToLocal(this_handle),
-                          v8::Utils::ToLocal(data_handle),
-                          v8::Utils::ToLocal(holder_handle));
+    CustomArguments args(interceptor->data(), receiver, this);
+    v8::AccessorInfo info(args.end());
     v8::Handle<v8::Value> result;
     {
       // Leaving JavaScript.
@@ -5927,6 +6012,65 @@ Object* JSObject::GetElementWithReceiver(JSObject* receiver, uint32_t index) {
       }
       break;
     }
+    case EXTERNAL_BYTE_ELEMENTS: {
+      ExternalByteArray* array = ExternalByteArray::cast(elements());
+      if (index < static_cast<uint32_t>(array->length())) {
+        int8_t value = array->get(index);
+        return Smi::FromInt(value);
+      }
+      break;
+    }
+    case EXTERNAL_UNSIGNED_BYTE_ELEMENTS: {
+      ExternalUnsignedByteArray* array =
+          ExternalUnsignedByteArray::cast(elements());
+      if (index < static_cast<uint32_t>(array->length())) {
+        uint8_t value = array->get(index);
+        return Smi::FromInt(value);
+      }
+      break;
+    }
+    case EXTERNAL_SHORT_ELEMENTS: {
+      ExternalShortArray* array = ExternalShortArray::cast(elements());
+      if (index < static_cast<uint32_t>(array->length())) {
+        int16_t value = array->get(index);
+        return Smi::FromInt(value);
+      }
+      break;
+    }
+    case EXTERNAL_UNSIGNED_SHORT_ELEMENTS: {
+      ExternalUnsignedShortArray* array =
+          ExternalUnsignedShortArray::cast(elements());
+      if (index < static_cast<uint32_t>(array->length())) {
+        uint16_t value = array->get(index);
+        return Smi::FromInt(value);
+      }
+      break;
+    }
+    case EXTERNAL_INT_ELEMENTS: {
+      ExternalIntArray* array = ExternalIntArray::cast(elements());
+      if (index < static_cast<uint32_t>(array->length())) {
+        int32_t value = array->get(index);
+        return Heap::NumberFromInt32(value);
+      }
+      break;
+    }
+    case EXTERNAL_UNSIGNED_INT_ELEMENTS: {
+      ExternalUnsignedIntArray* array =
+          ExternalUnsignedIntArray::cast(elements());
+      if (index < static_cast<uint32_t>(array->length())) {
+        uint32_t value = array->get(index);
+        return Heap::NumberFromUint32(value);
+      }
+      break;
+    }
+    case EXTERNAL_FLOAT_ELEMENTS: {
+      ExternalFloatArray* array = ExternalFloatArray::cast(elements());
+      if (index < static_cast<uint32_t>(array->length())) {
+        float value = array->get(index);
+        return Heap::AllocateHeapNumber(value);
+      }
+      break;
+    }
     case DICTIONARY_ELEMENTS: {
       NumberDictionary* dictionary = element_dictionary();
       int entry = dictionary->FindEntry(index);
@@ -5970,7 +6114,14 @@ bool JSObject::HasDenseElements() {
       }
       break;
     }
-    case PIXEL_ELEMENTS: {
+    case PIXEL_ELEMENTS:
+    case EXTERNAL_BYTE_ELEMENTS:
+    case EXTERNAL_UNSIGNED_BYTE_ELEMENTS:
+    case EXTERNAL_SHORT_ELEMENTS:
+    case EXTERNAL_UNSIGNED_SHORT_ELEMENTS:
+    case EXTERNAL_INT_ELEMENTS:
+    case EXTERNAL_UNSIGNED_INT_ELEMENTS:
+    case EXTERNAL_FLOAT_ELEMENTS: {
       return true;
     }
     case DICTIONARY_ELEMENTS: {
@@ -6055,7 +6206,8 @@ template<typename Shape, typename Key>
 void Dictionary<Shape, Key>::CopyValuesTo(FixedArray* elements) {
   int pos = 0;
   int capacity = HashTable<Shape, Key>::Capacity();
-  WriteBarrierMode mode = elements->GetWriteBarrierMode();
+  AssertNoAllocation no_gc;
+  WriteBarrierMode mode = elements->GetWriteBarrierMode(no_gc);
   for (int i = 0; i < capacity; i++) {
     Object* k =  Dictionary<Shape, Key>::KeyAt(i);
     if (Dictionary<Shape, Key>::IsKey(k)) {
@@ -6092,12 +6244,28 @@ Object* JSObject::GetPropertyPostInterceptor(JSObject* receiver,
   // Check local property in holder, ignore interceptor.
   LookupResult result;
   LocalLookupRealNamedProperty(name, &result);
-  if (result.IsValid()) return GetProperty(receiver, &result, name, attributes);
+  if (result.IsProperty()) {
+    return GetProperty(receiver, &result, name, attributes);
+  }
   // Continue searching via the prototype chain.
   Object* pt = GetPrototype();
   *attributes = ABSENT;
   if (pt == Heap::null_value()) return Heap::undefined_value();
   return pt->GetPropertyWithReceiver(receiver, name, attributes);
+}
+
+
+Object* JSObject::GetLocalPropertyPostInterceptor(
+    JSObject* receiver,
+    String* name,
+    PropertyAttributes* attributes) {
+  // Check local property in holder, ignore interceptor.
+  LookupResult result;
+  LocalLookupRealNamedProperty(name, &result);
+  if (result.IsProperty()) {
+    return GetProperty(receiver, &result, name, attributes);
+  }
+  return Heap::undefined_value();
 }
 
 
@@ -6110,15 +6278,13 @@ Object* JSObject::GetPropertyWithInterceptor(
   Handle<JSObject> receiver_handle(receiver);
   Handle<JSObject> holder_handle(this);
   Handle<String> name_handle(name);
-  Handle<Object> data_handle(interceptor->data());
 
   if (!interceptor->getter()->IsUndefined()) {
     v8::NamedPropertyGetter getter =
         v8::ToCData<v8::NamedPropertyGetter>(interceptor->getter());
     LOG(ApiNamedPropertyAccess("interceptor-named-get", *holder_handle, name));
-    v8::AccessorInfo info(v8::Utils::ToLocal(receiver_handle),
-                          v8::Utils::ToLocal(data_handle),
-                          v8::Utils::ToLocal(holder_handle));
+    CustomArguments args(interceptor->data(), receiver, this);
+    v8::AccessorInfo info(args.end());
     v8::Handle<v8::Value> result;
     {
       // Leaving JavaScript.
@@ -6151,24 +6317,7 @@ bool JSObject::HasRealNamedProperty(String* key) {
 
   LookupResult result;
   LocalLookupRealNamedProperty(key, &result);
-  if (result.IsValid()) {
-    switch (result.type()) {
-      case NORMAL:    // fall through.
-      case FIELD:     // fall through.
-      case CALLBACKS:  // fall through.
-      case CONSTANT_FUNCTION:
-        return true;
-      case INTERCEPTOR:
-      case MAP_TRANSITION:
-      case CONSTANT_TRANSITION:
-      case NULL_DESCRIPTOR:
-        return false;
-      default:
-        UNREACHABLE();
-    }
-  }
-
-  return false;
+  return result.IsProperty() && (result.type() != INTERCEPTOR);
 }
 
 
@@ -6196,6 +6345,16 @@ bool JSObject::HasRealElementProperty(uint32_t index) {
       PixelArray* pixels = PixelArray::cast(elements());
       return index < static_cast<uint32_t>(pixels->length());
     }
+    case EXTERNAL_BYTE_ELEMENTS:
+    case EXTERNAL_UNSIGNED_BYTE_ELEMENTS:
+    case EXTERNAL_SHORT_ELEMENTS:
+    case EXTERNAL_UNSIGNED_SHORT_ELEMENTS:
+    case EXTERNAL_INT_ELEMENTS:
+    case EXTERNAL_UNSIGNED_INT_ELEMENTS:
+    case EXTERNAL_FLOAT_ELEMENTS: {
+      ExternalArray* array = ExternalArray::cast(elements());
+      return index < static_cast<uint32_t>(array->length());
+    }
     case DICTIONARY_ELEMENTS: {
       return element_dictionary()->FindEntry(index)
           != NumberDictionary::kNotFound;
@@ -6220,7 +6379,7 @@ bool JSObject::HasRealNamedCallbackProperty(String* key) {
 
   LookupResult result;
   LocalLookupRealNamedProperty(key, &result);
-  return result.IsValid() && (result.type() == CALLBACKS);
+  return result.IsProperty() && (result.type() == CALLBACKS);
 }
 
 
@@ -6382,6 +6541,15 @@ int JSObject::NumberOfLocalElements(PropertyAttributes filter) {
 
 
 int JSObject::NumberOfEnumElements() {
+  // Fast case for objects with no elements.
+  if (!IsJSValue() && HasFastElements()) {
+    uint32_t length = IsJSArray() ?
+        static_cast<uint32_t>(
+            Smi::cast(JSArray::cast(this)->length())->value()) :
+        static_cast<uint32_t>(FixedArray::cast(elements())->length());
+    if (length == 0) return 0;
+  }
+  // Compute the number of enumerable elements.
   return NumberOfLocalElements(static_cast<PropertyAttributes>(DONT_ENUM));
 }
 
@@ -6397,7 +6565,7 @@ int JSObject::GetLocalElementKeys(FixedArray* storage,
       for (int i = 0; i < length; i++) {
         if (!FixedArray::cast(elements())->get(i)->IsTheHole()) {
           if (storage != NULL) {
-            storage->set(counter, Smi::FromInt(i), SKIP_WRITE_BARRIER);
+            storage->set(counter, Smi::FromInt(i));
           }
           counter++;
         }
@@ -6409,7 +6577,24 @@ int JSObject::GetLocalElementKeys(FixedArray* storage,
       int length = PixelArray::cast(elements())->length();
       while (counter < length) {
         if (storage != NULL) {
-          storage->set(counter, Smi::FromInt(counter), SKIP_WRITE_BARRIER);
+          storage->set(counter, Smi::FromInt(counter));
+        }
+        counter++;
+      }
+      ASSERT(!storage || storage->length() >= counter);
+      break;
+    }
+    case EXTERNAL_BYTE_ELEMENTS:
+    case EXTERNAL_UNSIGNED_BYTE_ELEMENTS:
+    case EXTERNAL_SHORT_ELEMENTS:
+    case EXTERNAL_UNSIGNED_SHORT_ELEMENTS:
+    case EXTERNAL_INT_ELEMENTS:
+    case EXTERNAL_UNSIGNED_INT_ELEMENTS:
+    case EXTERNAL_FLOAT_ELEMENTS: {
+      int length = ExternalArray::cast(elements())->length();
+      while (counter < length) {
+        if (storage != NULL) {
+          storage->set(counter, Smi::FromInt(counter));
         }
         counter++;
       }
@@ -6434,7 +6619,7 @@ int JSObject::GetLocalElementKeys(FixedArray* storage,
       String* str = String::cast(val);
       if (storage) {
         for (int i = 0; i < str->length(); i++) {
-          storage->set(counter + i, Smi::FromInt(i), SKIP_WRITE_BARRIER);
+          storage->set(counter + i, Smi::FromInt(i));
         }
       }
       counter += str->length();
@@ -6587,6 +6772,10 @@ class RegExpKey : public HashTableKey {
       : string_(string),
         flags_(Smi::FromInt(flags.value())) { }
 
+  // Rather than storing the key in the hash table, a pointer to the
+  // stored value is stored where the key should be.  IsMatch then
+  // compares the search key to the found object, rather than comparing
+  // a key to a key.
   bool IsMatch(Object* obj) {
     FixedArray* val = FixedArray::cast(obj);
     return string_->Equals(String::cast(val->get(JSRegExp::kSourceIndex)))
@@ -6620,19 +6809,19 @@ class RegExpKey : public HashTableKey {
 class Utf8SymbolKey : public HashTableKey {
  public:
   explicit Utf8SymbolKey(Vector<const char> string)
-      : string_(string), length_field_(0) { }
+      : string_(string), hash_field_(0) { }
 
   bool IsMatch(Object* string) {
     return String::cast(string)->IsEqualTo(string_);
   }
 
   uint32_t Hash() {
-    if (length_field_ != 0) return length_field_ >> String::kHashShift;
+    if (hash_field_ != 0) return hash_field_ >> String::kHashShift;
     unibrow::Utf8InputBuffer<> buffer(string_.start(),
                                       static_cast<unsigned>(string_.length()));
     chars_ = buffer.Length();
-    length_field_ = String::ComputeLengthAndHashField(&buffer, chars_);
-    uint32_t result = length_field_ >> String::kHashShift;
+    hash_field_ = String::ComputeHashField(&buffer, chars_);
+    uint32_t result = hash_field_ >> String::kHashShift;
     ASSERT(result != 0);  // Ensure that the hash value of 0 is never computed.
     return result;
   }
@@ -6642,12 +6831,12 @@ class Utf8SymbolKey : public HashTableKey {
   }
 
   Object* AsObject() {
-    if (length_field_ == 0) Hash();
-    return Heap::AllocateSymbol(string_, chars_, length_field_);
+    if (hash_field_ == 0) Hash();
+    return Heap::AllocateSymbol(string_, chars_, hash_field_);
   }
 
   Vector<const char> string_;
-  uint32_t length_field_;
+  uint32_t hash_field_;
   int chars_;  // Caches the number of characters when computing the hash code.
 };
 
@@ -6688,7 +6877,7 @@ class SymbolKey : public HashTableKey {
     StringInputBuffer buffer(string_);
     return Heap::AllocateInternalSymbol(&buffer,
                                         string_->length(),
-                                        string_->length_field());
+                                        string_->hash_field());
   }
 
   static uint32_t StringHash(Object* obj) {
@@ -6714,43 +6903,36 @@ void HashTable<Shape, Key>::IterateElements(ObjectVisitor* v) {
 
 
 template<typename Shape, typename Key>
-Object* HashTable<Shape, Key>::Allocate(
-    int at_least_space_for) {
+Object* HashTable<Shape, Key>::Allocate(int at_least_space_for) {
   int capacity = RoundUpToPowerOf2(at_least_space_for);
-  if (capacity < 4) capacity = 4;  // Guarantee min capacity.
+  if (capacity < 4) {
+    capacity = 4;  // Guarantee min capacity.
+  } else if (capacity > HashTable::kMaxCapacity) {
+    return Failure::OutOfMemoryException();
+  }
+
   Object* obj = Heap::AllocateHashTable(EntryToIndex(capacity));
   if (!obj->IsFailure()) {
     HashTable::cast(obj)->SetNumberOfElements(0);
+    HashTable::cast(obj)->SetNumberOfDeletedElements(0);
     HashTable::cast(obj)->SetCapacity(capacity);
   }
   return obj;
 }
 
 
-
-// Find entry for key otherwise return -1.
+// Find entry for key otherwise return kNotFound.
 template<typename Shape, typename Key>
 int HashTable<Shape, Key>::FindEntry(Key key) {
-  uint32_t nof = NumberOfElements();
-  if (nof == 0) return kNotFound;  // Bail out if empty.
-
   uint32_t capacity = Capacity();
-  uint32_t hash = Shape::Hash(key);
-  uint32_t entry = GetProbe(hash, 0, capacity);
-
-  Object* element = KeyAt(entry);
-  uint32_t passed_elements = 0;
-  if (!element->IsNull()) {
-    if (!element->IsUndefined() && Shape::IsMatch(key, element)) return entry;
-    if (++passed_elements == nof) return kNotFound;
-  }
-  for (uint32_t i = 1; !element->IsUndefined(); i++) {
-    entry = GetProbe(hash, i, capacity);
-    element = KeyAt(entry);
-    if (!element->IsNull()) {
-      if (!element->IsUndefined() && Shape::IsMatch(key, element)) return entry;
-      if (++passed_elements == nof) return kNotFound;
-    }
+  uint32_t entry = FirstProbe(Shape::Hash(key), capacity);
+  uint32_t count = 1;
+  // EnsureCapacity will guarantee the hash table is never full.
+  while (true) {
+    Object* element = KeyAt(entry);
+    if (element->IsUndefined()) break;  // Empty entry.
+    if (!element->IsNull() && Shape::IsMatch(key, element)) return entry;
+    entry = NextProbe(entry, count++, capacity);
   }
   return kNotFound;
 }
@@ -6760,13 +6942,19 @@ template<typename Shape, typename Key>
 Object* HashTable<Shape, Key>::EnsureCapacity(int n, Key key) {
   int capacity = Capacity();
   int nof = NumberOfElements() + n;
-  // Make sure 50% is free
-  if (nof + (nof >> 1) <= capacity) return this;
+  int nod = NumberOfDeletedElements();
+  // Return if:
+  //   50% is still free after adding n elements and
+  //   at most 50% of the free elements are deleted elements.
+  if ((nof + (nof >> 1) <= capacity) &&
+      (nod <= (capacity - nof) >> 1)) return this;
 
   Object* obj = Allocate(nof * 2);
   if (obj->IsFailure()) return obj;
+
+  AssertNoAllocation no_gc;
   HashTable* table = HashTable::cast(obj);
-  WriteBarrierMode mode = table->GetWriteBarrierMode();
+  WriteBarrierMode mode = table->GetWriteBarrierMode(no_gc);
 
   // Copy prefix to new array.
   for (int i = kPrefixStartIndex;
@@ -6788,21 +6976,23 @@ Object* HashTable<Shape, Key>::EnsureCapacity(int n, Key key) {
     }
   }
   table->SetNumberOfElements(NumberOfElements());
+  table->SetNumberOfDeletedElements(0);
   return table;
 }
+
 
 
 template<typename Shape, typename Key>
 uint32_t HashTable<Shape, Key>::FindInsertionEntry(uint32_t hash) {
   uint32_t capacity = Capacity();
-  uint32_t entry = GetProbe(hash, 0, capacity);
-  Object* element = KeyAt(entry);
-
-  for (uint32_t i = 1; !(element->IsUndefined() || element->IsNull()); i++) {
-    entry = GetProbe(hash, i, capacity);
-    element = KeyAt(entry);
+  uint32_t entry = FirstProbe(hash, capacity);
+  uint32_t count = 1;
+  // EnsureCapacity will guarantee the hash table is never full.
+  while (true) {
+    Object* element = KeyAt(entry);
+    if (element->IsUndefined() || element->IsNull()) break;
+    entry = NextProbe(entry, count++, capacity);
   }
-
   return entry;
 }
 
@@ -6881,6 +7071,10 @@ int Dictionary<NumberDictionaryShape, uint32_t>::NumberOfEnumElements();
 template
 int Dictionary<StringDictionaryShape, String*>::NumberOfEnumElements();
 
+template
+int HashTable<NumberDictionaryShape, uint32_t>::FindEntry(uint32_t);
+
+
 // Collates undefined and unexisting elements below limit from position
 // zero of the elements. The object stays in Dictionary mode.
 Object* JSObject::PrepareSlowElementsForSort(uint32_t limit) {
@@ -6958,7 +7152,7 @@ Object* JSObject::PrepareSlowElementsForSort(uint32_t limit) {
 // If the object is in dictionary mode, it is converted to fast elements
 // mode.
 Object* JSObject::PrepareElementsForSort(uint32_t limit) {
-  ASSERT(!HasPixelElements());
+  ASSERT(!HasPixelElements() && !HasExternalArrayElements());
 
   if (HasDictionaryElements()) {
     // Convert to fast elements containing only the existing properties.
@@ -7007,7 +7201,7 @@ Object* JSObject::PrepareElementsForSort(uint32_t limit) {
 
   // Split elements into defined, undefined and the_hole, in that order.
   // Only count locations for undefined and the hole, and fill them afterwards.
-  WriteBarrierMode write_barrier = elements->GetWriteBarrierMode();
+  WriteBarrierMode write_barrier = elements->GetWriteBarrierMode(no_alloc);
   unsigned int undefs = limit;
   unsigned int holes = limit;
   // Assume most arrays contain no holes and undefined values, so minimize the
@@ -7090,6 +7284,99 @@ Object* PixelArray::SetValue(uint32_t index, Object* value) {
 }
 
 
+template<typename ExternalArrayClass, typename ValueType>
+static Object* ExternalArrayIntSetter(ExternalArrayClass* receiver,
+                                      uint32_t index,
+                                      Object* value) {
+  ValueType cast_value = 0;
+  if (index < static_cast<uint32_t>(receiver->length())) {
+    if (value->IsSmi()) {
+      int int_value = Smi::cast(value)->value();
+      cast_value = static_cast<ValueType>(int_value);
+    } else if (value->IsHeapNumber()) {
+      double double_value = HeapNumber::cast(value)->value();
+      cast_value = static_cast<ValueType>(DoubleToInt32(double_value));
+    } else {
+      // Clamp undefined to zero (default). All other types have been
+      // converted to a number type further up in the call chain.
+      ASSERT(value->IsUndefined());
+    }
+    receiver->set(index, cast_value);
+  }
+  return Heap::NumberFromInt32(cast_value);
+}
+
+
+Object* ExternalByteArray::SetValue(uint32_t index, Object* value) {
+  return ExternalArrayIntSetter<ExternalByteArray, int8_t>
+      (this, index, value);
+}
+
+
+Object* ExternalUnsignedByteArray::SetValue(uint32_t index, Object* value) {
+  return ExternalArrayIntSetter<ExternalUnsignedByteArray, uint8_t>
+      (this, index, value);
+}
+
+
+Object* ExternalShortArray::SetValue(uint32_t index, Object* value) {
+  return ExternalArrayIntSetter<ExternalShortArray, int16_t>
+      (this, index, value);
+}
+
+
+Object* ExternalUnsignedShortArray::SetValue(uint32_t index, Object* value) {
+  return ExternalArrayIntSetter<ExternalUnsignedShortArray, uint16_t>
+      (this, index, value);
+}
+
+
+Object* ExternalIntArray::SetValue(uint32_t index, Object* value) {
+  return ExternalArrayIntSetter<ExternalIntArray, int32_t>
+      (this, index, value);
+}
+
+
+Object* ExternalUnsignedIntArray::SetValue(uint32_t index, Object* value) {
+  uint32_t cast_value = 0;
+  if (index < static_cast<uint32_t>(length())) {
+    if (value->IsSmi()) {
+      int int_value = Smi::cast(value)->value();
+      cast_value = static_cast<uint32_t>(int_value);
+    } else if (value->IsHeapNumber()) {
+      double double_value = HeapNumber::cast(value)->value();
+      cast_value = static_cast<uint32_t>(DoubleToUint32(double_value));
+    } else {
+      // Clamp undefined to zero (default). All other types have been
+      // converted to a number type further up in the call chain.
+      ASSERT(value->IsUndefined());
+    }
+    set(index, cast_value);
+  }
+  return Heap::NumberFromUint32(cast_value);
+}
+
+
+Object* ExternalFloatArray::SetValue(uint32_t index, Object* value) {
+  float cast_value = 0;
+  if (index < static_cast<uint32_t>(length())) {
+    if (value->IsSmi()) {
+      int int_value = Smi::cast(value)->value();
+      cast_value = static_cast<float>(int_value);
+    } else if (value->IsHeapNumber()) {
+      double double_value = HeapNumber::cast(value)->value();
+      cast_value = static_cast<float>(double_value);
+    } else {
+      // Clamp undefined to zero (default). All other types have been
+      // converted to a number type further up in the call chain.
+      ASSERT(value->IsUndefined());
+    }
+    set(index, cast_value);
+  }
+  return Heap::AllocateHeapNumber(cast_value);
+}
+
+
 Object* GlobalObject::GetPropertyCell(LookupResult* result) {
   ASSERT(!HasFastProperties());
   Object* value = property_dictionary()->ValueAt(result->GetDictionaryEntry());
@@ -7124,8 +7411,85 @@ Object* SymbolTable::LookupString(String* string, Object** s) {
 }
 
 
+// This class is used for looking up two character strings in the symbol table.
+// If we don't have a hit we don't want to waste much time so we unroll the
+// string hash calculation loop here for speed.  Doesn't work if the two
+// characters form a decimal integer, since such strings have a different hash
+// algorithm.
+class TwoCharHashTableKey : public HashTableKey {
+ public:
+  TwoCharHashTableKey(uint32_t c1, uint32_t c2)
+    : c1_(c1), c2_(c2) {
+    // Char 1.
+    uint32_t hash = c1 + (c1 << 10);
+    hash ^= hash >> 6;
+    // Char 2.
+    hash += c2;
+    hash += hash << 10;
+    hash ^= hash >> 6;
+    // GetHash.
+    hash += hash << 3;
+    hash ^= hash >> 11;
+    hash += hash << 15;
+    if (hash == 0) hash = 27;
+#ifdef DEBUG
+    StringHasher hasher(2);
+    hasher.AddCharacter(c1);
+    hasher.AddCharacter(c2);
+    // If this assert fails then we failed to reproduce the two-character
+    // version of the string hashing algorithm above.  One reason could be
+    // that we were passed two digits as characters, since the hash
+    // algorithm is different in that case.
+    ASSERT_EQ(static_cast<int>(hasher.GetHash()), static_cast<int>(hash));
+#endif
+    hash_ = hash;
+  }
+
+  bool IsMatch(Object* o) {
+    if (!o->IsString()) return false;
+    String* other = String::cast(o);
+    if (other->length() != 2) return false;
+    if (other->Get(0) != c1_) return false;
+    return other->Get(1) == c2_;
+  }
+
+  uint32_t Hash() { return hash_; }
+  uint32_t HashForObject(Object* key) {
+    if (!key->IsString()) return 0;
+    return String::cast(key)->Hash();
+  }
+
+  Object* AsObject() {
+    // The TwoCharHashTableKey is only used for looking in the symbol
+    // table, not for adding to it.
+    UNREACHABLE();
+    return NULL;
+  }
+ private:
+  uint32_t c1_;
+  uint32_t c2_;
+  uint32_t hash_;
+};
+
+
 bool SymbolTable::LookupSymbolIfExists(String* string, String** symbol) {
   SymbolKey key(string);
+  int entry = FindEntry(&key);
+  if (entry == kNotFound) {
+    return false;
+  } else {
+    String* result = String::cast(KeyAt(entry));
+    ASSERT(StringShape(result).IsSymbol());
+    *symbol = result;
+    return true;
+  }
+}
+
+
+bool SymbolTable::LookupTwoCharsSymbolIfExists(uint32_t c1,
+                                               uint32_t c2,
+                                               String** symbol) {
+  TwoCharHashTableKey key(c1, c2);
   int entry = FindEntry(&key);
   if (entry == kNotFound) {
     return false;
@@ -7246,6 +7610,8 @@ Object* CompilationCacheTable::PutRegExp(String* src,
   CompilationCacheTable* cache =
       reinterpret_cast<CompilationCacheTable*>(obj);
   int entry = cache->FindInsertionEntry(key.Hash());
+  // We store the value in the key slot, and compare the search key
+  // to the stored value with a custon IsMatch function during lookups.
   cache->set(EntryToIndex(entry), value);
   cache->set(EntryToIndex(entry) + 1, value);
   cache->ElementAdded();
@@ -7330,7 +7696,7 @@ Object* Dictionary<Shape, Key>::GenerateNewEnumerationIndices() {
   if (obj->IsFailure()) return obj;
   FixedArray* iteration_order = FixedArray::cast(obj);
   for (int i = 0; i < length; i++) {
-    iteration_order->set(i, Smi::FromInt(i), SKIP_WRITE_BARRIER);
+    iteration_order->set(i, Smi::FromInt(i));
   }
 
   // Allocate array with enumeration order.
@@ -7343,9 +7709,7 @@ Object* Dictionary<Shape, Key>::GenerateNewEnumerationIndices() {
   int pos = 0;
   for (int i = 0; i < capacity; i++) {
     if (Dictionary<Shape, Key>::IsKey(Dictionary<Shape, Key>::KeyAt(i))) {
-      enumeration_order->set(pos++,
-                             Smi::FromInt(DetailsAt(i).index()),
-                             SKIP_WRITE_BARRIER);
+      enumeration_order->set(pos++, Smi::FromInt(DetailsAt(i).index()));
     }
   }
 
@@ -7356,9 +7720,7 @@ Object* Dictionary<Shape, Key>::GenerateNewEnumerationIndices() {
   for (int i = 0; i < length; i++) {
     int index = Smi::cast(iteration_order->get(i))->value();
     int enum_index = PropertyDetails::kInitialIndex + i;
-    enumeration_order->set(index,
-                           Smi::FromInt(enum_index),
-                           SKIP_WRITE_BARRIER);
+    enumeration_order->set(index, Smi::FromInt(enum_index));
   }
 
   // Update the dictionary with new indices.
@@ -7411,7 +7773,7 @@ void NumberDictionary::RemoveNumberEntries(uint32_t from, uint32_t to) {
   }
 
   // Update the number of elements.
-  SetNumberOfElements(NumberOfElements() - removed_entries);
+  ElementsRemoved(removed_entries);
 }
 
 
@@ -7506,8 +7868,7 @@ void NumberDictionary::UpdateMaxNumberKey(uint32_t key) {
   Object* max_index_object = get(kMaxNumberKeyIndex);
   if (!max_index_object->IsSmi() || max_number_key() < key) {
     FixedArray::set(kMaxNumberKeyIndex,
-                    Smi::FromInt(key << kRequiresSlowElementsTagSize),
-                    SKIP_WRITE_BARRIER);
+                    Smi::FromInt(key << kRequiresSlowElementsTagSize));
   }
 }
 
@@ -7598,9 +7959,7 @@ void StringDictionary::CopyEnumKeysTo(FixedArray* storage,
        PropertyDetails details = DetailsAt(i);
        if (details.IsDeleted() || details.IsDontEnum()) continue;
        storage->set(index, k);
-       sort_array->set(index,
-                       Smi::FromInt(details.index()),
-                       SKIP_WRITE_BARRIER);
+       sort_array->set(index, Smi::FromInt(details.index()));
        index++;
      }
   }
@@ -7673,7 +8032,10 @@ Object* StringDictionary::TransformPropertiesToFastFor(
       PropertyType type = DetailsAt(i).type();
       ASSERT(type != FIELD);
       instance_descriptor_length++;
-      if (type == NORMAL && !value->IsJSFunction()) number_of_fields += 1;
+      if (type == NORMAL &&
+          (!value->IsJSFunction() || Heap::InNewSpace(value))) {
+        number_of_fields += 1;
+      }
     }
   }
 
@@ -7704,7 +8066,7 @@ Object* StringDictionary::TransformPropertiesToFastFor(
       PropertyDetails details = DetailsAt(i);
       PropertyType type = details.type();
 
-      if (value->IsJSFunction()) {
+      if (value->IsJSFunction() && !Heap::InNewSpace(value)) {
         ConstantFunctionDescriptor d(String::cast(key),
                                      JSFunction::cast(value),
                                      details.attributes(),

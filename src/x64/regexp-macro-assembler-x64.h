@@ -31,6 +31,8 @@
 namespace v8 {
 namespace internal {
 
+#ifdef V8_NATIVE_REGEXP
+
 class RegExpMacroAssemblerX64: public NativeRegExpMacroAssembler {
  public:
   RegExpMacroAssemblerX64(Mode mode, int registers_to_save);
@@ -71,8 +73,6 @@ class RegExpMacroAssemblerX64: public NativeRegExpMacroAssembler {
   // the end of the string.
   virtual void CheckPosition(int cp_offset, Label* on_outside_input);
   virtual bool CheckSpecialCharacterClass(uc16 type,
-                                          int cp_offset,
-                                          bool check_offset,
                                           Label* on_no_match);
   virtual void Fail();
   virtual Handle<Object> GetCode(Handle<String> source);
@@ -113,6 +113,13 @@ class RegExpMacroAssemblerX64: public NativeRegExpMacroAssembler {
                         int* output,
                         bool at_start);
 
+  // Called from RegExp if the stack-guard is triggered.
+  // If the code object is relocated, the return address is fixed before
+  // returning.
+  static int CheckStackGuardState(Address* return_address,
+                                  Code* re_code,
+                                  Address re_frame);
+
  private:
   // Offsets from rbp of function parameters and stored registers.
   static const int kFramePointer = 0;
@@ -120,18 +127,20 @@ class RegExpMacroAssemblerX64: public NativeRegExpMacroAssembler {
   static const int kReturn_eip = kFramePointer + kPointerSize;
   static const int kFrameAlign = kReturn_eip + kPointerSize;
 
-#ifdef __MSVC__
+#ifdef _WIN64
   // Parameters (first four passed as registers, but with room on stack).
   // In Microsoft 64-bit Calling Convention, there is room on the callers
   // stack (before the return address) to spill parameter registers. We
   // use this space to store the register passed parameters.
   static const int kInputString = kFrameAlign;
+  // StartIndex is passed as 32 bit int.
   static const int kStartIndex = kInputString + kPointerSize;
   static const int kInputStart = kStartIndex + kPointerSize;
   static const int kInputEnd = kInputStart + kPointerSize;
   static const int kRegisterOutput = kInputEnd + kPointerSize;
-  static const int kAtStart = kRegisterOutput + kPointerSize;
-  static const int kStackHighEnd = kAtStart + kPointerSize;
+  static const int kStackHighEnd = kRegisterOutput + kPointerSize;
+  // DirectCall is passed as 32 bit int (values 0 or 1).
+  static const int kDirectCall = kStackHighEnd + kPointerSize;
 #else
   // In AMD64 ABI Calling Convention, the first six integer parameters
   // are passed as registers, and caller must allocate space on the stack
@@ -141,11 +150,11 @@ class RegExpMacroAssemblerX64: public NativeRegExpMacroAssembler {
   static const int kInputStart = kStartIndex - kPointerSize;
   static const int kInputEnd = kInputStart - kPointerSize;
   static const int kRegisterOutput = kInputEnd - kPointerSize;
-  static const int kAtStart = kRegisterOutput - kPointerSize;
-  static const int kStackHighEnd = kFrameAlign;
+  static const int kStackHighEnd = kRegisterOutput - kPointerSize;
+  static const int kDirectCall = kFrameAlign;
 #endif
 
-#ifdef __MSVC__
+#ifdef _WIN64
   // Microsoft calling convention has three callee-saved registers
   // (that we are using). We push these after the frame pointer.
   static const int kBackup_rsi = kFramePointer - kPointerSize;
@@ -156,7 +165,7 @@ class RegExpMacroAssemblerX64: public NativeRegExpMacroAssembler {
   // AMD64 Calling Convention has only one callee-save register that
   // we use. We push this after the frame pointer (and after the
   // parameters).
-  static const int kBackup_rbx = kAtStart - kPointerSize;
+  static const int kBackup_rbx = kStackHighEnd - kPointerSize;
   static const int kLastCalleeSaveRegister = kBackup_rbx;
 #endif
 
@@ -164,9 +173,10 @@ class RegExpMacroAssemblerX64: public NativeRegExpMacroAssembler {
   // the frame in GetCode.
   static const int kInputStartMinusOne =
       kLastCalleeSaveRegister - kPointerSize;
+  static const int kAtStart = kInputStartMinusOne - kPointerSize;
 
   // First register address. Following registers are below it on the stack.
-  static const int kRegisterZero = kInputStartMinusOne - kPointerSize;
+  static const int kRegisterZero = kAtStart - kPointerSize;
 
   // Initial size of code buffer.
   static const size_t kRegExpCodeSize = 1024;
@@ -181,22 +191,8 @@ class RegExpMacroAssemblerX64: public NativeRegExpMacroAssembler {
   // Check whether we are exceeding the stack limit on the backtrack stack.
   void CheckStackLimit();
 
-  // Called from RegExp if the stack-guard is triggered.
-  // If the code object is relocated, the return address is fixed before
-  // returning.
-  static int CheckStackGuardState(Address* return_address,
-                                  Code* re_code,
-                                  Address re_frame);
-
   // Generate a call to CheckStackGuardState.
   void CallCheckStackGuardState();
-
-  // Called from RegExp if the backtrack stack limit is hit.
-  // Tries to expand the stack. Returns the new stack-pointer if
-  // successful, and updates the stack_top address, or returns 0 if unable
-  // to grow the stack.
-  // This function must not trigger a garbage collection.
-  static Address GrowStack(Address stack_pointer, Address* stack_top);
 
   // The rbp-relative location of a regexp register.
   Operand register_location(int register_index);
@@ -251,21 +247,6 @@ class RegExpMacroAssemblerX64: public NativeRegExpMacroAssembler {
   // Increments the stack pointer (rcx) by a word size.
   inline void Drop();
 
-  // Before calling a C-function from generated code, align arguments on stack.
-  // After aligning the frame, arguments must be stored in esp[0], esp[4],
-  // etc., not pushed. The argument count assumes all arguments are word sized.
-  // Some compilers/platforms require the stack to be aligned when calling
-  // C++ code.
-  // Needs a scratch register to do some arithmetic. This register will be
-  // trashed.
-  inline void FrameAlign(int num_arguments);
-
-  // Calls a C function and cleans up the space for arguments allocated
-  // by FrameAlign. The called function is not allowed to trigger a garbage
-  // collection, since that might move the code and invalidate the return
-  // address (unless this is somehow accounted for by the called function).
-  inline void CallCFunction(Address function_address, int num_arguments);
-
   MacroAssembler* masm_;
 
   ZoneList<int> code_relative_fixup_positions_;
@@ -289,6 +270,8 @@ class RegExpMacroAssemblerX64: public NativeRegExpMacroAssembler {
   Label check_preempt_label_;
   Label stack_overflow_label_;
 };
+
+#endif  // V8_NATIVE_REGEXP
 
 }}  // namespace v8::internal
 

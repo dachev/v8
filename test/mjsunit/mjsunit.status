@@ -34,42 +34,37 @@ bugs: FAIL
 # too long to run in debug mode on ARM.
 fuzz-natives: PASS, SKIP if ($mode == release || $arch == arm)
 
+# Issue 494: new snapshot code breaks mjsunit/apply on mac debug snapshot.
+apply: PASS, FAIL if ($system == macos && $mode == debug)
+
 big-object-literal: PASS, SKIP if ($arch == arm)
+
+# Issue 488: this test sometimes times out.
+array-constructor: PASS || TIMEOUT
+
+# Very slow on ARM, contains no architecture dependent code.
+unicode-case-overoptimization: PASS, TIMEOUT if ($arch == arm)
+
+# Skip long running test in debug and allow it to timeout in release mode.
+regress/regress-524: (PASS || TIMEOUT), SKIP if $mode == debug
 
 [ $arch == arm ]
 
 # Slow tests which times out in debug mode.
 try: PASS, SKIP if $mode == debug
 debug-scripts-request: PASS, SKIP if $mode == debug
+array-constructor: PASS, SKIP if $mode == debug
 
 # Flaky test that can hit compilation-time stack overflow in debug mode.
 unicode-test: PASS, (PASS || FAIL) if $mode == debug
 
-# Bug number 1020483: Debug tests fail on ARM.
-debug-constructor: CRASH, FAIL
-debug-continue: SKIP
-debug-evaluate-recursive: CRASH || FAIL
-debug-changebreakpoint: CRASH || FAIL
-debug-clearbreakpoint: CRASH || FAIL
-debug-clearbreakpointgroup: PASS, FAIL if $mode == debug
-debug-conditional-breakpoints: CRASH || FAIL
-debug-evaluate: CRASH || FAIL
-debug-ignore-breakpoints: CRASH || FAIL
-debug-multiple-breakpoints: CRASH || FAIL
-debug-setbreakpoint: CRASH || FAIL || PASS
-debug-step-stub-callfunction: SKIP
-debug-stepin-accessor: CRASH || FAIL
-debug-stepin-builtin: CRASH || FAIL
-debug-stepin-constructor: CRASH, FAIL
-debug-stepin-function-call: CRASH || FAIL
-debug-step: SKIP
-debug-breakpoints: PASS || FAIL
-debug-handle: CRASH || FAIL || PASS
-regress/regress-269: SKIP
-
-# Bug number 130 http://code.google.com/p/v8/issues/detail?id=130
-# Fails on real ARM hardware but not on the simulator.
-string-compare-alignment: PASS || FAIL
-
 # Times out often in release mode on ARM.
 array-splice: PASS || TIMEOUT
+
+# Skip long running test in debug mode on ARM.
+string-indexof-2: PASS, SKIP if $mode == debug
+
+[ $arch == mips ]
+
+# Skip all tests on MIPS.
+*: SKIP

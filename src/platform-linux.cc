@@ -56,6 +56,8 @@
 #include "v8.h"
 
 #include "platform.h"
+#include "top.h"
+#include "v8threads.h"
 
 
 namespace v8 {
@@ -82,9 +84,71 @@ void OS::Setup() {
 }
 
 
-double OS::nan_value() {
-  return NAN;
+uint64_t OS::CpuFeaturesImpliedByPlatform() {
+#if (defined(__VFP_FP__) && !defined(__SOFTFP__))
+  // Here gcc is telling us that we are on an ARM and gcc is assuming that we
+  // have VFP3 instructions.  If gcc can assume it then so can we.
+  return 1u << VFP3;
+#elif CAN_USE_ARMV7_INSTRUCTIONS
+  return 1u << ARMv7;
+#else
+  return 0;  // Linux runs on anything.
+#endif
 }
+
+
+#ifdef __arm__
+bool OS::ArmCpuHasFeature(CpuFeature feature) {
+  const char* search_string = NULL;
+  const char* file_name = "/proc/cpuinfo";
+  // Simple detection of VFP at runtime for Linux.
+  // It is based on /proc/cpuinfo, which reveals hardware configuration
+  // to user-space applications.  According to ARM (mid 2009), no similar
+  // facility is universally available on the ARM architectures,
+  // so it's up to individual OSes to provide such.
+  //
+  // This is written as a straight shot one pass parser
+  // and not using STL string and ifstream because,
+  // on Linux, it's reading from a (non-mmap-able)
+  // character special device.
+  switch (feature) {
+    case VFP3:
+      search_string = "vfp";
+      break;
+    case ARMv7:
+      search_string = "ARMv7";
+      break;
+    default:
+      UNREACHABLE();
+  }
+
+  FILE* f = NULL;
+  const char* what = search_string;
+
+  if (NULL == (f = fopen(file_name, "r")))
+    return false;
+
+  int k;
+  while (EOF != (k = fgetc(f))) {
+    if (k == *what) {
+      ++what;
+      while ((*what != '\0') && (*what == fgetc(f))) {
+        ++what;
+      }
+      if (*what == '\0') {
+        fclose(f);
+        return true;
+      } else {
+        what = search_string;
+      }
+    }
+  }
+  fclose(f);
+
+  // Did not find string in the proc file.
+  return false;
+}
+#endif  // def __arm__
 
 
 int OS::ActivationFrameAlignment() {
@@ -92,11 +156,30 @@ int OS::ActivationFrameAlignment() {
   // On EABI ARM targets this is required for fp correctness in the
   // runtime system.
   return 8;
-#else
+#elif V8_TARGET_ARCH_MIPS
+  return 8;
+#endif
   // With gcc 4.4 the tree vectorization optimiser can generate code
   // that requires 16 byte alignment such as movdqa on x86.
   return 16;
-#endif
+}
+
+
+const char* OS::LocalTimezone(double time) {
+  if (isnan(time)) return "";
+  time_t tv = static_cast<time_t>(floor(time/msPerSecond));
+  struct tm* t = localtime(&tv);
+  if (NULL == t) return "";
+  return t->tm_zone;
+}
+
+
+double OS::LocalTimeOffset() {
+  time_t tv = time(NULL);
+  struct tm* t = localtime(&tv);
+  // tm_gmtoff includes any daylight savings offset, so subtract it.
+  return static_cast<double>(t->tm_gmtoff * msPerSecond -
+                             (t->tm_isdst > 0 ? 3600 * msPerSecond : 0));
 }
 
 
@@ -145,7 +228,9 @@ void* OS::Allocate(const size_t requested,
 
 void OS::Free(void* address, const size_t size) {
   // TODO(1240712): munmap has a return value which is ignored here.
-  munmap(address, size);
+  int result = munmap(address, size);
+  USE(result);
+  ASSERT(result == 0);
 }
 
 
@@ -183,6 +268,8 @@ void OS::DebugBreak() {
 //  which is the architecture of generated code).
 #if defined(__arm__) || defined(__thumb__)
   asm("bkpt 0");
+#elif defined(__mips__)
+  asm("break");
 #else
   asm("int $3");
 #endif
@@ -228,7 +315,7 @@ void OS::LogSharedLibraryAddresses() {
   // This function assumes that the layout of the file is as follows:
   // hex_start_addr-hex_end_addr rwxp <unused data> [binary_file_name]
   // If we encounter an unexpected situation we abort scanning further entries.
-  FILE *fp = fopen("/proc/self/maps", "r");
+  FILE* fp = fopen("/proc/self/maps", "r");
   if (fp == NULL) return;
 
   // Allocate enough room to be able to store a full file name.
@@ -360,7 +447,7 @@ bool VirtualMemory::Commit(void* address, size_t size, bool is_executable) {
 
 bool VirtualMemory::Uncommit(void* address, size_t size) {
   return mmap(address, size, PROT_NONE,
-              MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE,
+              MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE | MAP_FIXED,
               kMmapFd, kMmapFdOffset) != MAP_FAILED;
 }
 
@@ -580,6 +667,7 @@ Semaphore* OS::CreateSemaphore(int count) {
 #ifdef ENABLE_LOGGING_AND_PROFILING
 
 static Sampler* active_sampler_ = NULL;
+static pthread_t vm_thread_ = 0;
 
 
 #if !defined(__GLIBC__) && (defined(__arm__) || defined(__thumb__))
@@ -598,7 +686,7 @@ typedef uint32_t __sigset_t;
 typedef struct sigcontext mcontext_t;
 typedef struct ucontext {
   uint32_t uc_flags;
-  struct ucontext *uc_link;
+  struct ucontext* uc_link;
   stack_t uc_stack;
   mcontext_t uc_mcontext;
   __sigset_t uc_sigmask;
@@ -608,7 +696,32 @@ enum ArmRegisters {R15 = 15, R13 = 13, R11 = 11};
 #endif
 
 
+// A function that determines if a signal handler is called in the context
+// of a VM thread.
+//
+// The problem is that SIGPROF signal can be delivered to an arbitrary thread
+// (see http://code.google.com/p/google-perftools/issues/detail?id=106#c2)
+// So, if the signal is being handled in the context of a non-VM thread,
+// it means that the VM thread is running, and trying to sample its stack can
+// cause a crash.
+static inline bool IsVmThread() {
+  // In the case of a single VM thread, this check is enough.
+  if (pthread_equal(pthread_self(), vm_thread_)) return true;
+  // If there are multiple threads that use VM, they must have a thread id
+  // stored in TLS. To verify that the thread is really executing VM,
+  // we check Top's data. Having that ThreadManager::RestoreThread first
+  // restores ThreadLocalTop from TLS, and only then erases the TLS value,
+  // reading Top::thread_id() should not be affected by races.
+  if (ThreadManager::HasId() && !ThreadManager::IsArchived() &&
+      ThreadManager::CurrentId() == Top::thread_id()) {
+    return true;
+  }
+  return false;
+}
+
+
 static void ProfilerSignalHandler(int signal, siginfo_t* info, void* context) {
+#ifndef V8_HOST_ARCH_MIPS
   USE(info);
   if (signal != SIGPROF) return;
   if (active_sampler_ == NULL) return;
@@ -621,32 +734,37 @@ static void ProfilerSignalHandler(int signal, siginfo_t* info, void* context) {
     ucontext_t* ucontext = reinterpret_cast<ucontext_t*>(context);
     mcontext_t& mcontext = ucontext->uc_mcontext;
 #if V8_HOST_ARCH_IA32
-    sample.pc = mcontext.gregs[REG_EIP];
-    sample.sp = mcontext.gregs[REG_ESP];
-    sample.fp = mcontext.gregs[REG_EBP];
+    sample.pc = reinterpret_cast<Address>(mcontext.gregs[REG_EIP]);
+    sample.sp = reinterpret_cast<Address>(mcontext.gregs[REG_ESP]);
+    sample.fp = reinterpret_cast<Address>(mcontext.gregs[REG_EBP]);
 #elif V8_HOST_ARCH_X64
-    sample.pc = mcontext.gregs[REG_RIP];
-    sample.sp = mcontext.gregs[REG_RSP];
-    sample.fp = mcontext.gregs[REG_RBP];
+    sample.pc = reinterpret_cast<Address>(mcontext.gregs[REG_RIP]);
+    sample.sp = reinterpret_cast<Address>(mcontext.gregs[REG_RSP]);
+    sample.fp = reinterpret_cast<Address>(mcontext.gregs[REG_RBP]);
 #elif V8_HOST_ARCH_ARM
 // An undefined macro evaluates to 0, so this applies to Android's Bionic also.
 #if (__GLIBC__ < 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ <= 3))
-    sample.pc = mcontext.gregs[R15];
-    sample.sp = mcontext.gregs[R13];
-    sample.fp = mcontext.gregs[R11];
+    sample.pc = reinterpret_cast<Address>(mcontext.gregs[R15]);
+    sample.sp = reinterpret_cast<Address>(mcontext.gregs[R13]);
+    sample.fp = reinterpret_cast<Address>(mcontext.gregs[R11]);
 #else
-    sample.pc = mcontext.arm_pc;
-    sample.sp = mcontext.arm_sp;
-    sample.fp = mcontext.arm_fp;
+    sample.pc = reinterpret_cast<Address>(mcontext.arm_pc);
+    sample.sp = reinterpret_cast<Address>(mcontext.arm_sp);
+    sample.fp = reinterpret_cast<Address>(mcontext.arm_fp);
 #endif
+#elif V8_HOST_ARCH_MIPS
+    // Implement this on MIPS.
+    UNIMPLEMENTED();
 #endif
-    active_sampler_->SampleStack(&sample);
+    if (IsVmThread())
+      active_sampler_->SampleStack(&sample);
   }
 
   // We always sample the VM state.
   sample.state = Logger::state();
 
   active_sampler_->Tick(&sample);
+#endif
 }
 
 
@@ -677,6 +795,8 @@ void Sampler::Start() {
   // There can only be one active sampler at the time on POSIX
   // platforms.
   if (active_sampler_ != NULL) return;
+
+  vm_thread_ = pthread_self();
 
   // Request profiling signals.
   struct sigaction sa;
@@ -712,6 +832,7 @@ void Sampler::Stop() {
   active_sampler_ = NULL;
   active_ = false;
 }
+
 
 #endif  // ENABLE_LOGGING_AND_PROFILING
 

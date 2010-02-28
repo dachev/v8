@@ -57,7 +57,7 @@ static void DummyStaticFunction(Object* result) {
 TEST(DisasmIa320) {
   InitializeVM();
   v8::HandleScope scope;
-  v8::internal::byte buffer[1024];
+  v8::internal::byte buffer[2048];
   Assembler assm(buffer, sizeof buffer);
   DummyStaticFunction(NULL);  // just bloody use it (DELETE; debugging)
 
@@ -101,17 +101,19 @@ TEST(DisasmIa320) {
   __ cmp(Operand(ebp, ecx, times_4, 0), Immediate(1000));
   Handle<FixedArray> foo2 = Factory::NewFixedArray(10, TENURED);
   __ cmp(ebx, foo2);
+  __ cmpb(ebx, Operand(ebp, ecx, times_2, 0));
+  __ cmpb(Operand(ebp, ecx, times_2, 0), ebx);
   __ or_(edx, 3);
   __ xor_(edx, 3);
   __ nop();
   {
-    CHECK(CpuFeatures::IsSupported(CpuFeatures::CPUID));
-    CpuFeatures::Scope fscope(CpuFeatures::CPUID);
+    CHECK(CpuFeatures::IsSupported(CPUID));
+    CpuFeatures::Scope fscope(CPUID);
     __ cpuid();
   }
   {
-    CHECK(CpuFeatures::IsSupported(CpuFeatures::RDTSC));
-    CpuFeatures::Scope fscope(CpuFeatures::RDTSC);
+    CHECK(CpuFeatures::IsSupported(RDTSC));
+    CpuFeatures::Scope fscope(RDTSC);
     __ rdtsc();
   }
   __ movsx_b(edx, Operand(ecx));
@@ -194,15 +196,16 @@ TEST(DisasmIa320) {
   __ rcl(edx, 7);
   __ sar(edx, 1);
   __ sar(edx, 6);
-  __ sar(edx);
+  __ sar_cl(edx);
   __ sbb(edx, Operand(ebx, ecx, times_4, 10000));
   __ shld(edx, Operand(ebx, ecx, times_4, 10000));
   __ shl(edx, 1);
   __ shl(edx, 6);
-  __ shl(edx);
+  __ shl_cl(edx);
   __ shrd(edx, Operand(ebx, ecx, times_4, 10000));
+  __ shr(edx, 1);
   __ shr(edx, 7);
-  __ shr(edx);
+  __ shr_cl(edx);
 
 
   // Immediates
@@ -222,13 +225,16 @@ TEST(DisasmIa320) {
 
   __ sub(Operand(ebx), Immediate(12));
   __ sub(Operand(edx, ecx, times_4, 10000), Immediate(12));
+  __ subb(Operand(edx, ecx, times_4, 10000), 100);
+  __ subb(Operand(eax), 100);
+  __ subb(eax, Operand(edx, ecx, times_4, 10000));
 
   __ xor_(ebx, 12345);
 
   __ imul(edx, ecx, 12);
   __ imul(edx, ecx, 1000);
 
-
+  __ rep_movs();
 
   __ sub(edx, Operand(ebx, ecx, times_4, 10000));
   __ sub(edx, Operand(ebx));
@@ -353,8 +359,8 @@ TEST(DisasmIa320) {
   __ fwait();
   __ nop();
   {
-    CHECK(CpuFeatures::IsSupported(CpuFeatures::SSE2));
-    CpuFeatures::Scope fscope(CpuFeatures::SSE2);
+    CHECK(CpuFeatures::IsSupported(SSE2));
+    CpuFeatures::Scope fscope(SSE2);
     __ cvttss2si(edx, Operand(ebx, ecx, times_4, 10000));
     __ cvtsi2sd(xmm1, Operand(ebx, ecx, times_4, 10000));
     __ addsd(xmm1, xmm0);
@@ -363,7 +369,37 @@ TEST(DisasmIa320) {
     __ divsd(xmm1, xmm0);
     __ movdbl(xmm1, Operand(ebx, ecx, times_4, 10000));
     __ movdbl(Operand(ebx, ecx, times_4, 10000), xmm1);
+    __ comisd(xmm0, xmm1);
+
+    // 128 bit move instructions.
+    __ movdqa(xmm0, Operand(ebx, ecx, times_4, 10000));
+    __ movdqa(Operand(ebx, ecx, times_4, 10000), xmm0);
+    __ movdqu(xmm0, Operand(ebx, ecx, times_4, 10000));
+    __ movdqu(Operand(ebx, ecx, times_4, 10000), xmm0);
   }
+
+  // cmov.
+  {
+    CHECK(CpuFeatures::IsSupported(CMOV));
+    CpuFeatures::Scope use_cmov(CMOV);
+    __ cmov(overflow, eax, Operand(eax, 0));
+    __ cmov(no_overflow, eax, Operand(eax, 1));
+    __ cmov(below, eax, Operand(eax, 2));
+    __ cmov(above_equal, eax, Operand(eax, 3));
+    __ cmov(equal, eax, Operand(ebx, 0));
+    __ cmov(not_equal, eax, Operand(ebx, 1));
+    __ cmov(below_equal, eax, Operand(ebx, 2));
+    __ cmov(above, eax, Operand(ebx, 3));
+    __ cmov(sign, eax, Operand(ecx, 0));
+    __ cmov(not_sign, eax, Operand(ecx, 1));
+    __ cmov(parity_even, eax, Operand(ecx, 2));
+    __ cmov(parity_odd, eax, Operand(ecx, 3));
+    __ cmov(less, eax, Operand(edx, 0));
+    __ cmov(greater_equal, eax, Operand(edx, 1));
+    __ cmov(less_equal, eax, Operand(edx, 2));
+    __ cmov(greater, eax, Operand(edx, 3));
+  }
+
   __ ret(0);
 
   CodeDesc desc;

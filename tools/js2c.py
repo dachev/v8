@@ -45,19 +45,10 @@ def ToCArray(lines):
   return ", ".join(result)
 
 
-def CompressScript(lines, do_jsmin):
-  # If we're not expecting this code to be user visible, we can run it through
-  # a more aggressive minifier.
-  if do_jsmin:
-    return jsmin.jsmin(lines)
-
-  # Remove stuff from the source that we don't want to appear when
-  # people print the source code using Function.prototype.toString().
-  # Note that we could easily compress the scripts mode but don't
-  # since we want it to remain readable.
-  lines = re.sub('//.*\n', '\n', lines) # end-of-line comments
+def RemoveCommentsAndTrailingWhitespace(lines):
+  lines = re.sub(r'//.*\n', '\n', lines) # end-of-line comments
   lines = re.sub(re.compile(r'/\*.*?\*/', re.DOTALL), '', lines) # comments.
-  lines = re.sub('\s+\n+', '\n', lines) # trailing whitespace
+  lines = re.sub(r'\s+\n+', '\n', lines) # trailing whitespace
   return lines
 
 
@@ -94,6 +85,22 @@ def ParseValue(string):
     return string.lstrip('[').rstrip(']').split()
   else:
     return string
+
+
+EVAL_PATTERN = re.compile(r'\beval\s*\(');
+WITH_PATTERN = re.compile(r'\bwith\s*\(');
+
+
+def Validate(lines, file):
+  lines = RemoveCommentsAndTrailingWhitespace(lines)
+  # Because of simplified context setup, eval and with is not
+  # allowed in the natives files.
+  eval_match = EVAL_PATTERN.search(lines)
+  if eval_match:
+    raise ("Eval disallowed in natives: %s" % file)
+  with_match = WITH_PATTERN.search(lines)
+  if with_match:
+    raise ("With statements disallowed in natives: %s" % file)
 
 
 def ExpandConstants(lines, constants):
@@ -155,9 +162,9 @@ class PythonMacro:
       args.append(mapping[arg])
     return str(self.fun(*args))
 
-CONST_PATTERN = re.compile('^const\s+([a-zA-Z0-9_]+)\s*=\s*([^;]*);$')
-MACRO_PATTERN = re.compile('^macro\s+([a-zA-Z0-9_]+)\s*\(([^)]*)\)\s*=\s*([^;]*);$')
-PYTHON_MACRO_PATTERN = re.compile('^python\s+macro\s+([a-zA-Z0-9_]+)\s*\(([^)]*)\)\s*=\s*([^;]*);$')
+CONST_PATTERN = re.compile(r'^const\s+([a-zA-Z0-9_]+)\s*=\s*([^;]*);$')
+MACRO_PATTERN = re.compile(r'^macro\s+([a-zA-Z0-9_]+)\s*\(([^)]*)\)\s*=\s*([^;]*);$')
+PYTHON_MACRO_PATTERN = re.compile(r'^python\s+macro\s+([a-zA-Z0-9_]+)\s*\(([^)]*)\)\s*=\s*([^;]*);$')
 
 def ReadMacros(lines):
   constants = { }
@@ -274,24 +281,28 @@ def JS2C(source, target, env):
 
   # Build source code lines
   source_lines = [ ]
+
+  minifier = jsmin.JavaScriptMinifier()
+
   source_lines_empty = []
-  for s in modules:
-    delay = str(s).endswith('-delay.js')
-    lines = ReadFile(str(s))
-    do_jsmin = lines.find('// jsminify this file, js2c: jsmin') != -1
+  for module in modules:
+    filename = str(module)
+    delay = filename.endswith('-delay.js')
+    lines = ReadFile(filename)
     lines = ExpandConstants(lines, consts)
     lines = ExpandMacros(lines, macros)
-    lines = CompressScript(lines, do_jsmin)
+    Validate(lines, filename)
+    lines = minifier.JSMinify(lines)
     data = ToCArray(lines)
-    id = (os.path.split(str(s))[1])[:-3]
+    id = (os.path.split(filename)[1])[:-3]
     if delay: id = id[:-6]
     if delay:
       delay_ids.append((id, len(lines)))
     else:
       ids.append((id, len(lines)))
     source_lines.append(SOURCE_DECLARATION % { 'id': id, 'data': data })
-    source_lines_empty.append(SOURCE_DECLARATION % { 'id': id, 'data': 0 })
-  
+    source_lines_empty.append(SOURCE_DECLARATION % { 'id': id, 'data': data })
+
   # Build delay support functions
   get_index_cases = [ ]
   get_script_source_cases = [ ]

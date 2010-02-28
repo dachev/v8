@@ -40,6 +40,7 @@ namespace internal {
 // Implementation is from "Hacker's Delight" by Henry S. Warren, Jr.,
 // figure 3-3, page 48, where the function is called clp2.
 uint32_t RoundUpToPowerOf2(uint32_t x) {
+  ASSERT(x <= 0x80000000u);
   x = x - 1;
   x = x | (x >> 1);
   x = x | (x >> 2);
@@ -47,43 +48,6 @@ uint32_t RoundUpToPowerOf2(uint32_t x) {
   x = x | (x >> 8);
   x = x | (x >> 16);
   return x + 1;
-}
-
-
-byte* EncodeInt(byte* p, int x) {
-  while (x < -64 || x >= 64) {
-    *p++ = static_cast<byte>(x & 127);
-    x = ArithmeticShiftRight(x, 7);
-  }
-  // -64 <= x && x < 64
-  *p++ = static_cast<byte>(x + 192);
-  return p;
-}
-
-
-byte* DecodeInt(byte* p, int* x) {
-  int r = 0;
-  unsigned int s = 0;
-  byte b = *p++;
-  while (b < 128) {
-    r |= static_cast<int>(b) << s;
-    s += 7;
-    b = *p++;
-  }
-  // b >= 128
-  *x = r | ((static_cast<int>(b) - 192) << s);
-  return p;
-}
-
-
-byte* EncodeUnsignedIntBackward(byte* p, unsigned int x) {
-  while (x >= 128) {
-    *--p = static_cast<byte>(x & 127);
-    x = x >> 7;
-  }
-  // x < 128
-  *--p = static_cast<byte>(x + 128);
-  return p;
 }
 
 
@@ -129,7 +93,7 @@ char* ReadLine(const char* prompt) {
       }
       return NULL;
     }
-    int len = strlen(line_buf);
+    int len = StrLength(line_buf);
     if (len > 1 &&
         line_buf[len - 2] == '\\' &&
         line_buf[len - 1] == '\n') {
@@ -184,7 +148,7 @@ char* ReadCharsFromFile(const char* filename,
 
   char* result = NewArray<char>(*size + extra_space);
   for (int i = 0; i < *size;) {
-    int read = fread(&result[i], 1, *size - i, file);
+    int read = static_cast<int>(fread(&result[i], 1, *size - i, file));
     if (read <= 0) {
       fclose(file);
       DeleteArray(result);
@@ -221,7 +185,7 @@ Vector<const char> ReadFile(const char* filename,
 int WriteCharsToFile(const char* str, int size, FILE* f) {
   int total = 0;
   while (total < size) {
-    int write = fwrite(str, 1, size - total, f);
+    int write = static_cast<int>(fwrite(str, 1, size - total, f));
     if (write == 0) {
       return total;
     }
@@ -239,7 +203,7 @@ int WriteChars(const char* filename,
   FILE* f = OS::FOpen(filename, "wb");
   if (f == NULL) {
     if (verbose) {
-      OS::PrintError("Cannot open file %s for reading.\n", filename);
+      OS::PrintError("Cannot open file %s for writing.\n", filename);
     }
     return 0;
   }
@@ -265,7 +229,7 @@ StringBuilder::StringBuilder(int size) {
 
 
 void StringBuilder::AddString(const char* s) {
-  AddSubstring(s, strlen(s));
+  AddSubstring(s, StrLength(s));
 }
 
 
@@ -307,6 +271,15 @@ char* StringBuilder::Finalize() {
   position_ = -1;
   ASSERT(is_finalized());
   return buffer_.start();
+}
+
+
+int TenToThe(int exponent) {
+  ASSERT(exponent <= 9);
+  ASSERT(exponent >= 1);
+  int answer = 10;
+  for (int i = 1; i < exponent; i++) answer *= 10;
+  return answer;
 }
 
 } }  // namespace v8::internal

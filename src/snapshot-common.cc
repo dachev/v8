@@ -32,14 +32,15 @@
 #include "api.h"
 #include "serialize.h"
 #include "snapshot.h"
+#include "platform.h"
 
 namespace v8 {
 namespace internal {
 
 bool Snapshot::Deserialize(const byte* content, int len) {
-  Deserializer des(content, len);
-  des.GetFlags();
-  return V8::Initialize(&des);
+  SnapshotByteSource source(content, len);
+  Deserializer deserializer(&source);
+  return V8::Initialize(&deserializer);
 }
 
 
@@ -48,28 +49,14 @@ bool Snapshot::Initialize(const char* snapshot_file) {
     int len;
     byte* str = ReadBytes(snapshot_file, &len);
     if (!str) return false;
-    bool result = Deserialize(str, len);
+    Deserialize(str, len);
     DeleteArray(str);
-    return result;
+    return true;
   } else if (size_ > 0) {
-    return Deserialize(data_, size_);
+    Deserialize(data_, size_);
+    return true;
   }
   return false;
 }
-
-
-bool Snapshot::WriteToFile(const char* snapshot_file) {
-  Serializer ser;
-  ser.Serialize();
-  byte* str;
-  int len;
-  ser.Finalize(&str, &len);
-
-  int written = WriteBytes(snapshot_file, str, len);
-
-  DeleteArray(str);
-  return written == len;
-}
-
 
 } }  // namespace v8::internal

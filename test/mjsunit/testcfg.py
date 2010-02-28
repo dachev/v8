@@ -31,7 +31,7 @@ from os.path import join, dirname, exists
 import re
 import tempfile
 
-
+MJSUNIT_DEBUG_FLAGS = ['--enable-slow-asserts', '--debug-code', '--verify-heap']
 FLAGS_PATTERN = re.compile(r"//\s+Flags:(.*)")
 FILES_PATTERN = re.compile(r"//\s+Files:(.*)")
 SELF_SCRIPT_PATTERN = re.compile(r"//\s+Env: TEST_FILE_NAME")
@@ -58,6 +58,8 @@ class MjsunitTestCase(test.TestCase):
     flags_match = FLAGS_PATTERN.search(source)
     if flags_match:
       result += flags_match.group(1).strip().split()
+    if self.mode == 'debug':
+      result += MJSUNIT_DEBUG_FLAGS
     additional_files = []
     files_match = FILES_PATTERN.search(source);
     # Accept several lines of 'Files:'
@@ -110,8 +112,10 @@ class MjsunitTestConfiguration(test.TestConfiguration):
     mjsunit = [current_path + [t] for t in self.Ls(self.root)]
     regress = [current_path + ['regress', t] for t in self.Ls(join(self.root, 'regress'))]
     bugs = [current_path + ['bugs', t] for t in self.Ls(join(self.root, 'bugs'))]
+    third_party = [current_path + ['third_party', t] for t in self.Ls(join(self.root, 'third_party'))]
     tools = [current_path + ['tools', t] for t in self.Ls(join(self.root, 'tools'))]
-    all_tests = mjsunit + regress + bugs + tools
+    compiler = [current_path + ['compiler', t] for t in self.Ls(join(self.root, 'compiler'))]
+    all_tests = mjsunit + regress + bugs + third_party + tools + compiler
     result = []
     for test in all_tests:
       if self.Contains(path, test):

@@ -102,7 +102,9 @@ class BreakLocationIterator {
   void ClearAllDebugBreak();
 
 
-  inline int code_position() { return pc() - debug_info_->code()->entry(); }
+  inline int code_position() {
+    return static_cast<int>(pc() - debug_info_->code()->entry());
+  }
   inline int break_point() { return break_point_; }
   inline int position() { return position_; }
   inline int statement_position() { return statement_position_; }
@@ -118,6 +120,8 @@ class BreakLocationIterator {
   inline RelocInfo::Mode original_rmode() const {
     return reloc_iterator_original_->rinfo()->rmode();
   }
+
+  bool IsDebuggerStatement();
 
  protected:
   bool RinfoDone() const;
@@ -279,6 +283,9 @@ class Debug {
   static Address step_in_fp() { return thread_local_.step_into_fp_; }
   static Address* step_in_fp_addr() { return &thread_local_.step_into_fp_; }
 
+  static bool StepOutActive() { return thread_local_.step_out_fp_ != 0; }
+  static Address step_out_fp() { return thread_local_.step_out_fp_; }
+
   static EnterDebugger* debugger_entry() {
     return thread_local_.debugger_entry_;
   }
@@ -329,10 +336,8 @@ class Debug {
     return &registers_[r];
   }
 
-  // Address of the debug break return entry code.
-  static Code* debug_break_return_entry() { return debug_break_return_entry_; }
-
-  // Support for getting the address of the debug break on return code.
+  // Access to the debug break on return code.
+  static Code* debug_break_return() { return debug_break_return_; }
   static Code** debug_break_return_address() {
     return &debug_break_return_;
   }
@@ -350,6 +355,7 @@ class Debug {
   static char* ArchiveDebug(char* to);
   static char* RestoreDebug(char* from);
   static int ArchiveSpacePerThread();
+  static void FreeThreadResources() { }
 
   // Mirror cache handling.
   static void ClearMirrorCache();
@@ -363,15 +369,6 @@ class Debug {
   // Garbage collection notifications.
   static void AfterGarbageCollection();
 
-  // Code generation assumptions.
-  static const int kIa32CallInstructionLength = 5;
-  static const int kIa32JSReturnSequenceLength = 6;
-
-  // The x64 JS return sequence is padded with int3 to make it large
-  // enough to hold a call instruction when the debugger patches it.
-  static const int kX64CallInstructionLength = 13;
-  static const int kX64JSReturnSequenceLength = 13;
-
   // Code generator routines.
   static void GenerateLoadICDebugBreak(MacroAssembler* masm);
   static void GenerateStoreICDebugBreak(MacroAssembler* masm);
@@ -379,7 +376,6 @@ class Debug {
   static void GenerateKeyedStoreICDebugBreak(MacroAssembler* masm);
   static void GenerateConstructCallDebugBreak(MacroAssembler* masm);
   static void GenerateReturnDebugBreak(MacroAssembler* masm);
-  static void GenerateReturnDebugBreakEntry(MacroAssembler* masm);
   static void GenerateStubNoRegistersDebugBreak(MacroAssembler* masm);
 
   // Called from stub-cache.cc.
@@ -390,9 +386,10 @@ class Debug {
   static void ClearOneShot();
   static void ActivateStepIn(StackFrame* frame);
   static void ClearStepIn();
+  static void ActivateStepOut(StackFrame* frame);
+  static void ClearStepOut();
   static void ClearStepNext();
   // Returns whether the compile succeeded.
-  static bool EnsureCompiled(Handle<SharedFunctionInfo> shared);
   static void RemoveDebugInfo(Handle<DebugInfo> debug_info);
   static void SetAfterBreakTarget(JavaScriptFrame* frame);
   static Handle<Object> CheckBreakPoints(Handle<Object> break_point);
@@ -442,6 +439,10 @@ class Debug {
     // Frame pointer for frame from which step in was performed.
     Address step_into_fp_;
 
+    // Frame pointer for the frame where debugger should be called when current
+    // step out action is completed.
+    Address step_out_fp_;
+
     // Storage location for jump when exiting debug break calls.
     Address after_break_target_;
 
@@ -456,9 +457,6 @@ class Debug {
   static JSCallerSavedBuffer registers_;
   static ThreadLocal thread_local_;
   static void ThreadInit();
-
-  // Code object for debug break return entry code.
-  static Code* debug_break_return_entry_;
 
   // Code to call for handling debug break on return.
   static Code* debug_break_return_;
@@ -559,6 +557,9 @@ class CommandMessageQueue BASE_EMBEDDED {
 };
 
 
+class MessageDispatchHelperThread;
+
+
 // LockingCommandMessageQueue is a thread-safe circular buffer of CommandMessage
 // messages.  The message data is not managed by LockingCommandMessageQueue.
 // Pointers to the data are passed in and out. Implemented by adding a
@@ -618,6 +619,9 @@ class Debugger {
   static void SetMessageHandler(v8::Debug::MessageHandler2 handler);
   static void SetHostDispatchHandler(v8::Debug::HostDispatchHandler handler,
                                      int period);
+  static void SetDebugMessageDispatchHandler(
+      v8::Debug::DebugMessageDispatchHandler handler,
+      bool provide_locker);
 
   // Invoke the message handler function.
   static void InvokeMessageHandler(MessageImpl message);
@@ -634,10 +638,16 @@ class Debugger {
                              bool* pending_exception);
 
   // Start the debugger agent listening on the provided port.
-  static bool StartAgent(const char* name, int port);
+  static bool StartAgent(const char* name, int port,
+                         bool wait_for_connection = false);
 
   // Stop the debugger agent.
   static void StopAgent();
+
+  // Blocks until the agent has started listening for connections
+  static void WaitForAgent();
+
+  static void CallMessageDispatchHandler();
 
   // Unload the debugger if possible. Only called when no debugger is currently
   // active.
@@ -648,7 +658,9 @@ class Debugger {
 
     // Check whether the message handler was been cleared.
     if (debugger_unload_pending_) {
-      UnloadDebugger();
+      if (Debug::debugger_entry() == NULL) {
+        UnloadDebugger();
+      }
     }
 
     // Currently argument event is not used.
@@ -675,6 +687,9 @@ class Debugger {
   static v8::Debug::MessageHandler2 message_handler_;
   static bool debugger_unload_pending_;  // Was message handler cleared?
   static v8::Debug::HostDispatchHandler host_dispatch_handler_;
+  static Mutex* dispatch_handler_access_;  // Mutex guarding dispatch handler.
+  static v8::Debug::DebugMessageDispatchHandler debug_message_dispatch_handler_;
+  static MessageDispatchHelperThread* message_dispatch_helper_thread_;
   static int host_dispatch_micros_;
 
   static DebuggerAgent* agent_;
@@ -849,6 +864,27 @@ class Debug_Address {
  private:
   Debug::AddressId id_;
   int reg_;
+};
+
+// The optional thread that Debug Agent may use to temporary call V8 to process
+// pending debug requests if debuggee is not running V8 at the moment.
+// Techincally it does not call V8 itself, rather it asks embedding program
+// to do this via v8::Debug::HostDispatchHandler
+class MessageDispatchHelperThread: public Thread {
+ public:
+  MessageDispatchHelperThread();
+  ~MessageDispatchHelperThread();
+
+  void Schedule();
+
+ private:
+  void Run();
+
+  Semaphore* const sem_;
+  Mutex* const mutex_;
+  bool already_signalled_;
+
+  DISALLOW_COPY_AND_ASSIGN(MessageDispatchHelperThread);
 };
 
 

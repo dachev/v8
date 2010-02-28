@@ -28,27 +28,27 @@
 #include "v8.h"
 
 #include "bootstrapper.h"
-#include "cfg.h"
 #include "codegen-inl.h"
 #include "compilation-cache.h"
 #include "compiler.h"
 #include "debug.h"
+#include "fast-codegen.h"
+#include "full-codegen.h"
 #include "oprofile-agent.h"
 #include "rewriter.h"
 #include "scopes.h"
 #include "usage-analyzer.h"
+#include "liveedit.h"
 
 namespace v8 {
 namespace internal {
 
-static Handle<Code> MakeCode(FunctionLiteral* literal,
-                             Handle<Script> script,
-                             Handle<Context> context,
-                             bool is_eval) {
-  ASSERT(literal != NULL);
 
+static Handle<Code> MakeCode(Handle<Context> context, CompilationInfo* info) {
+  FunctionLiteral* function = info->function();
+  ASSERT(function != NULL);
   // Rewrite the AST by introducing .result assignments where needed.
-  if (!Rewriter::Process(literal) || !AnalyzeVariableUsage(literal)) {
+  if (!Rewriter::Process(function) || !AnalyzeVariableUsage(function)) {
     // Signal a stack overflow by returning a null handle.  The stack
     // overflow exception will be thrown by the caller.
     return Handle<Code>::null();
@@ -59,7 +59,7 @@ static Handle<Code> MakeCode(FunctionLiteral* literal,
     // the top scope only contains the single lazily compiled function,
     // so this doesn't re-allocate variables repeatedly.
     HistogramTimerScope timer(&Counters::variable_allocation);
-    Scope* top = literal->scope();
+    Scope* top = info->scope();
     while (top->outer_scope() != NULL) top = top->outer_scope();
     top->AllocateVariables(context);
   }
@@ -68,47 +68,52 @@ static Handle<Code> MakeCode(FunctionLiteral* literal,
   if (Bootstrapper::IsActive() ?
       FLAG_print_builtin_scopes :
       FLAG_print_scopes) {
-    literal->scope()->Print();
+    info->scope()->Print();
   }
 #endif
 
   // Optimize the AST.
-  if (!Rewriter::Optimize(literal)) {
+  if (!Rewriter::Optimize(function)) {
     // Signal a stack overflow by returning a null handle.  The stack
     // overflow exception will be thrown by the caller.
     return Handle<Code>::null();
   }
 
-  if (FLAG_multipass) {
-    CfgGlobals scope(literal);
-    Cfg* cfg = Cfg::Build();
-#ifdef DEBUG
-    if (FLAG_print_cfg && cfg != NULL) {
-      SmartPointer<char> name = literal->name()->ToCString();
-      PrintF("Function \"%s\":\n", *name);
-      cfg->Print();
-      PrintF("\n");
+  // Generate code and return it.  Code generator selection is governed by
+  // which backends are enabled and whether the function is considered
+  // run-once code or not:
+  //
+  //  --full-compiler enables the dedicated backend for code we expect to be
+  //    run once
+  //  --fast-compiler enables a speculative optimizing backend (for
+  //    non-run-once code)
+  //
+  // The normal choice of backend can be overridden with the flags
+  // --always-full-compiler and --always-fast-compiler, which are mutually
+  // incompatible.
+  CHECK(!FLAG_always_full_compiler || !FLAG_always_fast_compiler);
+
+  Handle<SharedFunctionInfo> shared = info->shared_info();
+  bool is_run_once = (shared.is_null())
+      ? info->scope()->is_global_scope()
+      : (shared->is_toplevel() || shared->try_full_codegen());
+
+  if (FLAG_always_full_compiler || (FLAG_full_compiler && is_run_once)) {
+    FullCodeGenSyntaxChecker checker;
+    checker.Check(function);
+    if (checker.has_supported_syntax()) {
+      return FullCodeGenerator::MakeCode(info);
     }
-#endif
-    if (cfg != NULL) {
-      return cfg->Compile(script);
+  } else if (FLAG_always_fast_compiler ||
+             (FLAG_fast_compiler && !is_run_once)) {
+    FastCodeGenSyntaxChecker checker;
+    checker.Check(info);
+    if (checker.has_supported_syntax()) {
+      return FastCodeGenerator::MakeCode(info);
     }
   }
 
-  // Generate code and return it.
-  Handle<Code> result = CodeGenerator::MakeCode(literal, script, is_eval);
-  return result;
-}
-
-
-static bool IsValidJSON(FunctionLiteral* lit) {
-  if (lit->body()->length() != 1)
-    return false;
-  Statement* stmt = lit->body()->at(0);
-  if (stmt->AsExpressionStatement() == NULL)
-    return false;
-  Expression* expr = stmt->AsExpressionStatement()->expression();
-  return expr->IsValidJSON();
+  return CodeGenerator::MakeCode(info);
 }
 
 
@@ -121,15 +126,13 @@ static Handle<JSFunction> MakeFunction(bool is_global,
                                        ScriptDataImpl* pre_data) {
   CompilationZoneScope zone_scope(DELETE_ON_EXIT);
 
-  // Make sure we have an initial stack limit.
-  StackGuard guard;
   PostponeInterruptsScope postpone;
 
   ASSERT(!i::Top::global_context().is_null());
   script->set_context_data((*i::Top::global_context())->data());
 
-#ifdef ENABLE_DEBUGGER_SUPPORT
   bool is_json = (validate == Compiler::VALIDATE_JSON);
+#ifdef ENABLE_DEBUGGER_SUPPORT
   if (is_eval || is_json) {
     script->set_compilation_type(
         is_json ? Smi::FromInt(Script::COMPILATION_TYPE_JSON) :
@@ -137,10 +140,14 @@ static Handle<JSFunction> MakeFunction(bool is_global,
     // For eval scripts add information on the function from which eval was
     // called.
     if (is_eval) {
-      JavaScriptFrameIterator it;
-      script->set_eval_from_function(it.frame()->function());
-      int offset = it.frame()->pc() - it.frame()->code()->instruction_start();
-      script->set_eval_from_instructions_offset(Smi::FromInt(offset));
+      StackTraceFrameIterator it;
+      if (!it.done()) {
+        script->set_eval_from_shared(
+            JSFunction::cast(it.frame()->function())->shared());
+        int offset = static_cast<int>(
+            it.frame()->pc() - it.frame()->code()->instruction_start());
+        script->set_eval_from_instructions_offset(Smi::FromInt(offset));
+      }
     }
   }
 
@@ -152,24 +159,12 @@ static Handle<JSFunction> MakeFunction(bool is_global,
   ASSERT(is_eval || is_global);
 
   // Build AST.
-  FunctionLiteral* lit = MakeAST(is_global, script, extension, pre_data);
+  FunctionLiteral* lit =
+      MakeAST(is_global, script, extension, pre_data, is_json);
 
   // Check for parse errors.
   if (lit == NULL) {
     ASSERT(Top::has_pending_exception());
-    return Handle<JSFunction>::null();
-  }
-
-  // When parsing JSON we do an ordinary parse and then afterwards
-  // check the AST to ensure it was well-formed.  If not we give a
-  // syntax error.
-  if (validate == Compiler::VALIDATE_JSON && !IsValidJSON(lit)) {
-    HandleScope scope;
-    Handle<JSArray> args = Factory::NewJSArray(1);
-    Handle<Object> source(script->source());
-    SetElement(args, 0, source);
-    Handle<Object> result = Factory::NewSyntaxError("invalid_json", args);
-    Top::Throw(*result, NULL);
     return Handle<JSFunction>::null();
   }
 
@@ -182,7 +177,8 @@ static Handle<JSFunction> MakeFunction(bool is_global,
   HistogramTimerScope timer(rate);
 
   // Compile the code.
-  Handle<Code> code = MakeCode(lit, script, context, is_eval);
+  CompilationInfo info(lit, script, is_eval);
+  Handle<Code> code = MakeCode(context, &info);
 
   // Check for stack-overflow exceptions.
   if (code.is_null()) {
@@ -216,11 +212,10 @@ static Handle<JSFunction> MakeFunction(bool is_global,
   Handle<JSFunction> fun =
       Factory::NewFunctionBoilerplate(lit->name(),
                                       lit->materialized_literal_count(),
-                                      lit->contains_array_literal(),
                                       code);
 
   ASSERT_EQ(RelocInfo::kNoPosition, lit->function_token_position());
-  CodeGenerator::SetFunctionInfo(fun, lit, true, script);
+  Compiler::SetFunctionInfo(fun, lit, true, script);
 
   // Hint to the runtime system used when allocating space for initial
   // property space by setting the expected number of properties for
@@ -243,7 +238,8 @@ Handle<JSFunction> Compiler::Compile(Handle<String> source,
                                      Handle<Object> script_name,
                                      int line_offset, int column_offset,
                                      v8::Extension* extension,
-                                     ScriptDataImpl* input_pre_data) {
+                                     ScriptDataImpl* input_pre_data,
+                                     Handle<Object> script_data) {
   int source_length = source->length();
   Counters::total_load_size.Increment(source_length);
   Counters::total_compile_size.Increment(source_length);
@@ -276,6 +272,9 @@ Handle<JSFunction> Compiler::Compile(Handle<String> source,
       script->set_line_offset(Smi::FromInt(line_offset));
       script->set_column_offset(Smi::FromInt(column_offset));
     }
+
+    script->set_data(script_data.is_null() ? Heap::undefined_value()
+                                           : *script_data);
 
     // Compile the function and add it to the cache.
     result = MakeFunction(true,
@@ -344,20 +343,17 @@ Handle<JSFunction> Compiler::CompileEval(Handle<String> source,
 }
 
 
-bool Compiler::CompileLazy(Handle<SharedFunctionInfo> shared,
-                           int loop_nesting) {
+bool Compiler::CompileLazy(CompilationInfo* info) {
   CompilationZoneScope zone_scope(DELETE_ON_EXIT);
 
   // The VM is in the COMPILER state until exiting this function.
   VMState state(COMPILER);
 
-  // Make sure we have an initial stack limit.
-  StackGuard guard;
   PostponeInterruptsScope postpone;
 
   // Compute name, source code and script data.
+  Handle<SharedFunctionInfo> shared = info->shared_info();
   Handle<String> name(String::cast(shared->name()));
-  Handle<Script> script(Script::cast(shared->script()));
 
   int start_position = shared->start_position();
   int end_position = shared->end_position();
@@ -366,7 +362,8 @@ bool Compiler::CompileLazy(Handle<SharedFunctionInfo> shared,
 
   // Generate the AST for the lazily compiled function. The AST may be
   // NULL in case of parser stack overflow.
-  FunctionLiteral* lit = MakeLazyAST(script, name,
+  FunctionLiteral* lit = MakeLazyAST(info->script(),
+                                     name,
                                      start_position,
                                      end_position,
                                      is_expression);
@@ -376,9 +373,7 @@ bool Compiler::CompileLazy(Handle<SharedFunctionInfo> shared,
     ASSERT(Top::has_pending_exception());
     return false;
   }
-
-  // Update the loop nesting in the function literal.
-  lit->set_loop_nesting(loop_nesting);
+  info->set_function(lit);
 
   // Measure how long it takes to do the lazy compilation; only take
   // the rest of the function into account to avoid overlap with the
@@ -386,7 +381,7 @@ bool Compiler::CompileLazy(Handle<SharedFunctionInfo> shared,
   HistogramTimerScope timer(&Counters::compile_lazy);
 
   // Compile the code.
-  Handle<Code> code = MakeCode(lit, script, Handle<Context>::null(), false);
+  Handle<Code> code = MakeCode(Handle<Context>::null(), info);
 
   // Check for stack-overflow exception.
   if (code.is_null()) {
@@ -395,28 +390,12 @@ bool Compiler::CompileLazy(Handle<SharedFunctionInfo> shared,
   }
 
 #if defined ENABLE_LOGGING_AND_PROFILING || defined ENABLE_OPROFILE_AGENT
-  // Log the code generation. If source information is available include script
-  // name and line number. Check explicit whether logging is enabled as finding
-  // the line number is not for free.
-  if (Logger::is_logging() || OProfileAgent::is_enabled()) {
-    Handle<String> func_name(name->length() > 0 ?
-                             *name : shared->inferred_name());
-    if (script->name()->IsString()) {
-      int line_num = GetScriptLineNumber(script, start_position) + 1;
-      LOG(CodeCreateEvent(Logger::LAZY_COMPILE_TAG, *code, *func_name,
-                          String::cast(script->name()), line_num));
-      OProfileAgent::CreateNativeCodeRegion(*func_name,
-                                            String::cast(script->name()),
-                                            line_num,
-                                            code->instruction_start(),
-                                            code->instruction_size());
-    } else {
-      LOG(CodeCreateEvent(Logger::LAZY_COMPILE_TAG, *code, *func_name));
-      OProfileAgent::CreateNativeCodeRegion(*func_name,
-                                            code->instruction_start(),
-                                            code->instruction_size());
-    }
-  }
+  LogCodeCreateEvent(Logger::LAZY_COMPILE_TAG,
+                     name,
+                     Handle<String>(shared->inferred_name()),
+                     start_position,
+                     info->script(),
+                     code);
 #endif
 
   // Update the shared function info with the compiled code.
@@ -428,7 +407,6 @@ bool Compiler::CompileLazy(Handle<SharedFunctionInfo> shared,
   // Set the optimication hints after performing lazy compilation, as these are
   // not set when the function is set up as a lazily compiled function.
   shared->SetThisPropertyAssignmentsInfo(
-      lit->has_only_this_property_assignments(),
       lit->has_only_simple_this_property_assignments(),
       *lit->this_property_assignments());
 
@@ -437,5 +415,158 @@ bool Compiler::CompileLazy(Handle<SharedFunctionInfo> shared,
   return true;
 }
 
+
+Handle<JSFunction> Compiler::BuildBoilerplate(FunctionLiteral* literal,
+                                              Handle<Script> script,
+                                              AstVisitor* caller) {
+#ifdef DEBUG
+  // We should not try to compile the same function literal more than
+  // once.
+  literal->mark_as_compiled();
+#endif
+
+  // Determine if the function can be lazily compiled. This is
+  // necessary to allow some of our builtin JS files to be lazily
+  // compiled. These builtins cannot be handled lazily by the parser,
+  // since we have to know if a function uses the special natives
+  // syntax, which is something the parser records.
+  bool allow_lazy = literal->AllowsLazyCompilation() &&
+      !LiveEditFunctionTracker::IsActive();
+
+  // Generate code
+  Handle<Code> code;
+  if (FLAG_lazy && allow_lazy) {
+    code = ComputeLazyCompile(literal->num_parameters());
+  } else {
+    // The bodies of function literals have not yet been visited by
+    // the AST optimizer/analyzer.
+    if (!Rewriter::Optimize(literal)) {
+      return Handle<JSFunction>::null();
+    }
+
+    // Generate code and return it.  The way that the compilation mode
+    // is controlled by the command-line flags is described in
+    // the static helper function MakeCode.
+    CompilationInfo info(literal, script, false);
+
+    CHECK(!FLAG_always_full_compiler || !FLAG_always_fast_compiler);
+    bool is_run_once = literal->try_full_codegen();
+    bool is_compiled = false;
+    if (FLAG_always_full_compiler || (FLAG_full_compiler && is_run_once)) {
+      FullCodeGenSyntaxChecker checker;
+      checker.Check(literal);
+      if (checker.has_supported_syntax()) {
+        code = FullCodeGenerator::MakeCode(&info);
+        is_compiled = true;
+      }
+    } else if (FLAG_always_fast_compiler ||
+               (FLAG_fast_compiler && !is_run_once)) {
+      // Since we are not lazily compiling we do not have a receiver to
+      // specialize for.
+      FastCodeGenSyntaxChecker checker;
+      checker.Check(&info);
+      if (checker.has_supported_syntax()) {
+        code = FastCodeGenerator::MakeCode(&info);
+        is_compiled = true;
+      }
+    }
+
+    if (!is_compiled) {
+      // We fall back to the classic V8 code generator.
+      code = CodeGenerator::MakeCode(&info);
+    }
+
+    // Check for stack-overflow exception.
+    if (code.is_null()) {
+      caller->SetStackOverflow();
+      return Handle<JSFunction>::null();
+    }
+
+    // Function compilation complete.
+
+#if defined ENABLE_LOGGING_AND_PROFILING || defined ENABLE_OPROFILE_AGENT
+    LogCodeCreateEvent(Logger::FUNCTION_TAG,
+                       literal->name(),
+                       literal->inferred_name(),
+                       literal->start_position(),
+                       script,
+                       code);
+#endif
+  }
+
+  // Create a boilerplate function.
+  Handle<JSFunction> function =
+      Factory::NewFunctionBoilerplate(literal->name(),
+                                      literal->materialized_literal_count(),
+                                      code);
+  SetFunctionInfo(function, literal, false, script);
+
+#ifdef ENABLE_DEBUGGER_SUPPORT
+  // Notify debugger that a new function has been added.
+  Debugger::OnNewFunction(function);
+#endif
+
+  // Set the expected number of properties for instances and return
+  // the resulting function.
+  SetExpectedNofPropertiesFromEstimate(function,
+                                       literal->expected_property_count());
+  return function;
+}
+
+
+// Sets the function info on a function.
+// The start_position points to the first '(' character after the function name
+// in the full script source. When counting characters in the script source the
+// the first character is number 0 (not 1).
+void Compiler::SetFunctionInfo(Handle<JSFunction> fun,
+                               FunctionLiteral* lit,
+                               bool is_toplevel,
+                               Handle<Script> script) {
+  fun->shared()->set_length(lit->num_parameters());
+  fun->shared()->set_formal_parameter_count(lit->num_parameters());
+  fun->shared()->set_script(*script);
+  fun->shared()->set_function_token_position(lit->function_token_position());
+  fun->shared()->set_start_position(lit->start_position());
+  fun->shared()->set_end_position(lit->end_position());
+  fun->shared()->set_is_expression(lit->is_expression());
+  fun->shared()->set_is_toplevel(is_toplevel);
+  fun->shared()->set_inferred_name(*lit->inferred_name());
+  fun->shared()->SetThisPropertyAssignmentsInfo(
+      lit->has_only_simple_this_property_assignments(),
+      *lit->this_property_assignments());
+  fun->shared()->set_try_full_codegen(lit->try_full_codegen());
+}
+
+
+#if defined ENABLE_LOGGING_AND_PROFILING || defined ENABLE_OPROFILE_AGENT
+void Compiler::LogCodeCreateEvent(Logger::LogEventsAndTags tag,
+                                  Handle<String> name,
+                                  Handle<String> inferred_name,
+                                  int start_position,
+                                  Handle<Script> script,
+                                  Handle<Code> code) {
+  // Log the code generation. If source information is available
+  // include script name and line number. Check explicitly whether
+  // logging is enabled as finding the line number is not free.
+  if (Logger::is_logging() || OProfileAgent::is_enabled()) {
+    Handle<String> func_name(name->length() > 0 ? *name : *inferred_name);
+    if (script->name()->IsString()) {
+      int line_num = GetScriptLineNumber(script, start_position) + 1;
+      LOG(CodeCreateEvent(tag, *code, *func_name,
+                          String::cast(script->name()), line_num));
+      OProfileAgent::CreateNativeCodeRegion(*func_name,
+                                            String::cast(script->name()),
+                                            line_num,
+                                            code->instruction_start(),
+                                            code->instruction_size());
+    } else {
+      LOG(CodeCreateEvent(tag, *code, *func_name));
+      OProfileAgent::CreateNativeCodeRegion(*func_name,
+                                            code->instruction_start(),
+                                            code->instruction_size());
+    }
+  }
+}
+#endif
 
 } }  // namespace v8::internal

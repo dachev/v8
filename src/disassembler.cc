@@ -74,7 +74,7 @@ const char* V8NameConverter::NameOfAddress(byte* pc) const {
   }
 
   if (code_ != NULL) {
-    int offs = pc - code_->instruction_start();
+    int offs = static_cast<int>(pc - code_->instruction_start());
     // print as code offset, if it seems reasonable
     if (0 <= offs && offs < code_->instruction_size()) {
       OS::SNPrintF(buffer, "%d  (%p)", offs, pc);
@@ -261,18 +261,12 @@ static int DecodeIt(FILE* f,
             ASSERT(code->major_key() == CodeStub::MajorKeyFromKey(key));
             out.AddFormatted(" %s, %s, ",
                              Code::Kind2String(kind),
-                             CodeStub::MajorName(code->major_key()));
+                             CodeStub::MajorName(code->major_key(), false));
             switch (code->major_key()) {
               case CodeStub::CallFunction:
                 out.AddFormatted("argc = %d", minor_key);
                 break;
-              case CodeStub::Runtime: {
-                const char* name =
-                    RuntimeStub::GetNameFromMinorKey(minor_key);
-                out.AddFormatted("%s", name);
-                break;
-              }
-              default:
+            default:
                 out.AddFormatted("minor: %d", minor_key);
             }
           }
@@ -289,7 +283,7 @@ static int DecodeIt(FILE* f,
   }
 
   delete it;
-  return pc - begin;
+  return static_cast<int>(pc - begin);
 }
 
 

@@ -92,7 +92,7 @@ function CheckScopeChain(scopes, exec_state) {
   }
   
   // Get the debug command processor.
-  var dcp = exec_state.debugCommandProcessor();
+  var dcp = exec_state.debugCommandProcessor("unspecified_running_state");
   
   // Send a scopes request and check the result.
   var json;
@@ -140,6 +140,11 @@ function CheckScopeContent(content, number, exec_state) {
   if (!scope.scopeObject().property('arguments').isUndefined()) {
     scope_size--;
   }
+  // Also ignore synthetic variable from catch block.
+  if (!scope.scopeObject().property('.catch-var').isUndefined()) {
+    scope_size--;
+  }
+
   if (count != scope_size) {
     print('Names found in scope:');
     var names = scope.scopeObject().propertyNames();
@@ -150,7 +155,7 @@ function CheckScopeContent(content, number, exec_state) {
   assertEquals(count, scope_size);
 
   // Get the debug command processor.
-  var dcp = exec_state.debugCommandProcessor();
+  var dcp = exec_state.debugCommandProcessor("unspecified_running_state");
   
   // Send a scope request for information on a single scope and check the
   // result.
@@ -655,6 +660,102 @@ listener_delegate = function(exec_state) {
 }
 debugger;
 EndTest();
+
+
+BeginTest("Catch block 1");
+function catch_block_1() {
+  try {
+    throw 'Exception';
+  } catch (e) {
+    debugger;
+  }
+};
+
+
+listener_delegate = function(exec_state) {
+  CheckScopeChain([debug.ScopeType.Catch,
+                   debug.ScopeType.Local,
+                   debug.ScopeType.Global], exec_state);
+  CheckScopeContent({e:'Exception'}, 0, exec_state);
+}
+catch_block_1()
+EndTest();
+
+
+BeginTest("Catch block 2");
+function catch_block_2() {
+  try {
+    throw 'Exception';
+  } catch (e) {
+    with({n:10}) {
+      debugger;
+    }
+  }
+};
+
+
+listener_delegate = function(exec_state) {
+  CheckScopeChain([debug.ScopeType.With,
+                   debug.ScopeType.Catch,
+                   debug.ScopeType.Local,
+                   debug.ScopeType.Global], exec_state);
+  CheckScopeContent({n:10}, 0, exec_state);
+  CheckScopeContent({e:'Exception'}, 1, exec_state);
+}
+catch_block_2()
+EndTest();
+
+
+BeginTest("Catch block 3");
+function catch_block_1() {
+  // Do eval to dynamically declare a local variable so that the context's
+  // extension slot is initialized with JSContextExtensionObject.
+  eval("var y = 78;");
+  try {
+    throw 'Exception';
+  } catch (e) {
+    debugger;
+  }
+};
+
+
+listener_delegate = function(exec_state) {
+  CheckScopeChain([debug.ScopeType.Catch,
+                   debug.ScopeType.Local,
+                   debug.ScopeType.Global], exec_state);
+  CheckScopeContent({e:'Exception'}, 0, exec_state);
+  CheckScopeContent({y:78}, 1, exec_state);
+}
+catch_block_1()
+EndTest();
+
+
+BeginTest("Catch block 4");
+function catch_block_2() {
+  // Do eval to dynamically declare a local variable so that the context's
+  // extension slot is initialized with JSContextExtensionObject.
+  eval("var y = 98;");
+  try {
+    throw 'Exception';
+  } catch (e) {
+    with({n:10}) {
+      debugger;
+    }
+  }
+};
+
+listener_delegate = function(exec_state) {
+  CheckScopeChain([debug.ScopeType.With,
+                   debug.ScopeType.Catch,
+                   debug.ScopeType.Local,
+                   debug.ScopeType.Global], exec_state);
+  CheckScopeContent({n:10}, 0, exec_state);
+  CheckScopeContent({e:'Exception'}, 1, exec_state);
+  CheckScopeContent({y:98}, 2, exec_state);
+}
+catch_block_2()
+EndTest();
+
 
 assertEquals(begin_test_count, break_count, 'one or more tests did not enter the debugger');
 assertEquals(begin_test_count, end_test_count, 'one or more tests did not have its result checked');

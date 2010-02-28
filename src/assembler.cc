@@ -42,6 +42,21 @@
 #include "serialize.h"
 #include "stub-cache.h"
 #include "regexp-stack.h"
+#include "ast.h"
+#include "regexp-macro-assembler.h"
+#include "platform.h"
+// Include native regexp-macro-assembler.
+#ifdef V8_NATIVE_REGEXP
+#if V8_TARGET_ARCH_IA32
+#include "ia32/regexp-macro-assembler-ia32.h"
+#elif V8_TARGET_ARCH_X64
+#include "x64/regexp-macro-assembler-x64.h"
+#elif V8_TARGET_ARCH_ARM
+#include "arm/regexp-macro-assembler-arm.h"
+#else  // Unknown architecture.
+#error "Unknown architecture."
+#endif  // Target architecture.
+#endif  // V8_NATIVE_REGEXP
 
 namespace v8 {
 namespace internal {
@@ -160,14 +175,14 @@ void RelocInfoWriter::WriteTaggedPC(uint32_t pc_delta, int tag) {
 
 
 void RelocInfoWriter::WriteTaggedData(intptr_t data_delta, int tag) {
-  *--pos_ = data_delta << kPositionTypeTagBits | tag;
+  *--pos_ = static_cast<byte>(data_delta << kPositionTypeTagBits | tag);
 }
 
 
 void RelocInfoWriter::WriteExtraTag(int extra_tag, int top_tag) {
-  *--pos_ = top_tag << (kTagBits + kExtraTagBits) |
-            extra_tag << kTagBits |
-            kDefaultTag;
+  *--pos_ = static_cast<int>(top_tag << (kTagBits + kExtraTagBits) |
+                             extra_tag << kTagBits |
+                             kDefaultTag);
 }
 
 
@@ -182,7 +197,7 @@ void RelocInfoWriter::WriteExtraTaggedPC(uint32_t pc_delta, int extra_tag) {
 void RelocInfoWriter::WriteExtraTaggedData(intptr_t data_delta, int top_tag) {
   WriteExtraTag(kDataJumpTag, top_tag);
   for (int i = 0; i < kIntptrSize; i++) {
-    *--pos_ = data_delta;
+    *--pos_ = static_cast<byte>(data_delta);
   // Signed right shift is arithmetic shift.  Tested in test-utils.cc.
     data_delta = data_delta >> kBitsPerByte;
   }
@@ -197,7 +212,7 @@ void RelocInfoWriter::Write(const RelocInfo* rinfo) {
   ASSERT(rinfo->pc() - last_pc_ >= 0);
   ASSERT(RelocInfo::NUMBER_OF_MODES < kMaxRelocModes);
   // Use unsigned delta-encoding for pc.
-  uint32_t pc_delta = rinfo->pc() - last_pc_;
+  uint32_t pc_delta = static_cast<uint32_t>(rinfo->pc() - last_pc_);
   RelocInfo::Mode rmode = rinfo->rmode();
 
   // The two most common modes are given small tags, and usually fit in a byte.
@@ -329,9 +344,6 @@ void RelocIterator::next() {
       if (SetMode(RelocInfo::EMBEDDED_OBJECT)) return;
     } else if (tag == kCodeTargetTag) {
       ReadTaggedPC();
-      if (*(reinterpret_cast<int*>(rinfo_.pc())) == 0x61) {
-        tag = 0;
-      }
       if (SetMode(RelocInfo::CODE_TARGET)) return;
     } else if (tag == kPositionTag) {
       ReadTaggedPC();
@@ -418,6 +430,11 @@ const char* RelocInfo::RelocModeName(RelocInfo::Mode rmode) {
       return "code target (js construct call)";
     case RelocInfo::CODE_TARGET_CONTEXT:
       return "code target (context)";
+    case RelocInfo::DEBUG_BREAK:
+#ifndef ENABLE_DEBUGGER_SUPPORT
+      UNREACHABLE();
+#endif
+      return "debug break";
     case RelocInfo::CODE_TARGET:
       return "code target";
     case RelocInfo::RUNTIME_ENTRY:
@@ -473,6 +490,11 @@ void RelocInfo::Verify() {
     case EMBEDDED_OBJECT:
       Object::VerifyPointer(target_object());
       break;
+    case DEBUG_BREAK:
+#ifndef ENABLE_DEBUGGER_SUPPORT
+      UNREACHABLE();
+      break;
+#endif
     case CONSTRUCT_CALL:
     case CODE_TARGET_CONTEXT:
     case CODE_TARGET: {
@@ -480,7 +502,7 @@ void RelocInfo::Verify() {
       Address addr = target_address();
       ASSERT(addr != NULL);
       // Check that we can find the right code object.
-      HeapObject* code = HeapObject::FromAddress(addr - Code::kHeaderSize);
+      Code* code = Code::GetCodeFromTargetAddress(addr);
       Object* found = Heap::FindCodeObject(addr);
       ASSERT(found->IsCode());
       ASSERT(code->address() == HeapObject::cast(found)->address());
@@ -509,6 +531,10 @@ void RelocInfo::Verify() {
 
 ExternalReference::ExternalReference(Builtins::CFunctionId id)
   : address_(Redirect(Builtins::c_function_address(id))) {}
+
+
+ExternalReference::ExternalReference(ApiFunction* fun)
+  : address_(Redirect(fun->address())) {}
 
 
 ExternalReference::ExternalReference(Builtins::Name name)
@@ -548,13 +574,23 @@ ExternalReference ExternalReference::perform_gc_function() {
 }
 
 
-ExternalReference ExternalReference::builtin_passed_function() {
-  return ExternalReference(&Builtins::builtin_passed_function);
+ExternalReference ExternalReference::random_positive_smi_function() {
+  return ExternalReference(Redirect(FUNCTION_ADDR(V8::RandomPositiveSmi)));
 }
 
 
-ExternalReference ExternalReference::random_positive_smi_function() {
-  return ExternalReference(Redirect(FUNCTION_ADDR(V8::RandomPositiveSmi)));
+ExternalReference ExternalReference::transcendental_cache_array_address() {
+  return ExternalReference(TranscendentalCache::cache_array_address());
+}
+
+
+ExternalReference ExternalReference::keyed_lookup_cache_keys() {
+  return ExternalReference(KeyedLookupCache::keys_address());
+}
+
+
+ExternalReference ExternalReference::keyed_lookup_cache_field_offsets() {
+  return ExternalReference(KeyedLookupCache::field_offsets_address());
 }
 
 
@@ -568,8 +604,13 @@ ExternalReference ExternalReference::roots_address() {
 }
 
 
-ExternalReference ExternalReference::address_of_stack_guard_limit() {
+ExternalReference ExternalReference::address_of_stack_limit() {
   return ExternalReference(StackGuard::address_of_jslimit());
+}
+
+
+ExternalReference ExternalReference::address_of_real_stack_limit() {
+  return ExternalReference(StackGuard::address_of_real_jslimit());
 }
 
 
@@ -598,6 +639,72 @@ ExternalReference ExternalReference::new_space_allocation_limit_address() {
 }
 
 
+ExternalReference ExternalReference::handle_scope_extensions_address() {
+  return ExternalReference(HandleScope::current_extensions_address());
+}
+
+
+ExternalReference ExternalReference::handle_scope_next_address() {
+  return ExternalReference(HandleScope::current_next_address());
+}
+
+
+ExternalReference ExternalReference::handle_scope_limit_address() {
+  return ExternalReference(HandleScope::current_limit_address());
+}
+
+
+ExternalReference ExternalReference::scheduled_exception_address() {
+  return ExternalReference(Top::scheduled_exception_address());
+}
+
+
+#ifdef V8_NATIVE_REGEXP
+
+ExternalReference ExternalReference::re_check_stack_guard_state() {
+  Address function;
+#ifdef V8_TARGET_ARCH_X64
+  function = FUNCTION_ADDR(RegExpMacroAssemblerX64::CheckStackGuardState);
+#elif V8_TARGET_ARCH_IA32
+  function = FUNCTION_ADDR(RegExpMacroAssemblerIA32::CheckStackGuardState);
+#elif V8_TARGET_ARCH_ARM
+  function = FUNCTION_ADDR(RegExpMacroAssemblerARM::CheckStackGuardState);
+#else
+  UNREACHABLE();
+#endif
+  return ExternalReference(Redirect(function));
+}
+
+ExternalReference ExternalReference::re_grow_stack() {
+  return ExternalReference(
+      Redirect(FUNCTION_ADDR(NativeRegExpMacroAssembler::GrowStack)));
+}
+
+ExternalReference ExternalReference::re_case_insensitive_compare_uc16() {
+  return ExternalReference(Redirect(
+      FUNCTION_ADDR(NativeRegExpMacroAssembler::CaseInsensitiveCompareUC16)));
+}
+
+ExternalReference ExternalReference::re_word_character_map() {
+  return ExternalReference(
+      NativeRegExpMacroAssembler::word_character_map_address());
+}
+
+ExternalReference ExternalReference::address_of_static_offsets_vector() {
+  return ExternalReference(OffsetsVector::static_offsets_vector_address());
+}
+
+ExternalReference ExternalReference::address_of_regexp_stack_memory_address() {
+  return ExternalReference(RegExpStack::memory_address());
+}
+
+ExternalReference ExternalReference::address_of_regexp_stack_memory_size() {
+  return ExternalReference(RegExpStack::memory_size_address());
+}
+
+#endif
+
+
 static double add_two_doubles(double x, double y) {
   return x + y;
 }
@@ -619,13 +726,13 @@ static double div_two_doubles(double x, double y) {
 
 
 static double mod_two_doubles(double x, double y) {
-  return fmod(x, y);
+  return modulo(x, y);
 }
 
 
-static int native_compare_doubles(double x, double y) {
-  if (x == y) return 0;
-  return x < y ? 1 : -1;
+static int native_compare_doubles(double y, double x) {
+  if (x == y) return EQUAL;
+  return x < y ? LESS : GREATER;
 }
 
 

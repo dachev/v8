@@ -49,6 +49,7 @@
 			/>
 			<Tool
 				Name="VCLinkerTool"
+				AdditionalDependencies="winmm.lib Ws2_32.lib"
 			/>
 			<Tool
 				Name="VCALinkTool"
@@ -67,9 +68,6 @@
 			/>
 			<Tool
 				Name="VCAppVerifierTool"
-			/>
-			<Tool
-				Name="VCWebDeploymentTool"
 			/>
 			<Tool
 				Name="VCPostBuildEventTool"
@@ -109,6 +107,7 @@
 			/>
 			<Tool
 				Name="VCLinkerTool"
+				AdditionalDependencies="winmm.lib Ws2_32.lib"
 			/>
 			<Tool
 				Name="VCALinkTool"
@@ -127,9 +126,6 @@
 			/>
 			<Tool
 				Name="VCAppVerifierTool"
-			/>
-			<Tool
-				Name="VCWebDeploymentTool"
 			/>
 			<Tool
 				Name="VCPostBuildEventTool"
@@ -189,6 +185,10 @@
 		</File>
 		<File
 			RelativePath="..\..\test\cctest\test-heap.cc"
+			>
+		</File>
+		<File
+			RelativePath="..\..\test\cctest\test-heap-profiler.cc"
 			>
 		</File>
 		<File

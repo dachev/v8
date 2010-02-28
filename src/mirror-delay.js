@@ -25,8 +25,6 @@
 // (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 // OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-// jsminify this file, js2c: jsmin
-
 // Touch the RegExp and Date functions to make sure that date-delay.js and
 // regexp-delay.js has been loaded. This is required as the mirrors use
 // functions within these files through the builtins object.
@@ -201,7 +199,8 @@ PropertyAttribute.DontDelete = DONT_DELETE;
 ScopeType = { Global: 0,
               Local: 1,
               With: 2,
-              Closure: 3 };
+              Closure: 3,
+              Catch: 4 };
 
 
 // Mirror hierarchy:
@@ -554,14 +553,16 @@ StringMirror.prototype.length = function() {
   return this.value_.length;
 };
 
+StringMirror.prototype.getTruncatedValue = function(maxLength) {
+  if (maxLength != -1 && this.length() > maxLength) {
+    return this.value_.substring(0, maxLength) +
+           '... (length: ' + this.length() + ')';
+  }
+  return this.value_;
+}
 
 StringMirror.prototype.toText = function() {
-  if (this.length() > kMaxProtocolStringLength) {
-    return this.value_.substring(0, kMaxProtocolStringLength) +
-           '... (length: ' + this.length() + ')';
-  } else {
-    return this.value_;
-  }
+  return this.getTruncatedValue(kMaxProtocolStringLength);
 }
 
 
@@ -601,14 +602,14 @@ ObjectMirror.prototype.protoObject = function() {
 
 ObjectMirror.prototype.hasNamedInterceptor = function() {
   // Get information on interceptors for this object.
-  var x = %DebugInterceptorInfo(this.value_);
+  var x = %GetInterceptorInfo(this.value_);
   return (x & 2) != 0;
 };
 
 
 ObjectMirror.prototype.hasIndexedInterceptor = function() {
   // Get information on interceptors for this object.
-  var x = %DebugInterceptorInfo(this.value_);
+  var x = %GetInterceptorInfo(this.value_);
   return (x & 1) != 0;
 };
 
@@ -632,13 +633,13 @@ ObjectMirror.prototype.propertyNames = function(kind, limit) {
   // Find all the named properties.
   if (kind & PropertyKind.Named) {
     // Get the local property names.
-    propertyNames = %DebugLocalPropertyNames(this.value_);
+    propertyNames = %GetLocalPropertyNames(this.value_);
     total += propertyNames.length;
 
     // Get names for named interceptor properties if any.
     if (this.hasNamedInterceptor() && (kind & PropertyKind.Named)) {
       var namedInterceptorNames =
-          %DebugNamedInterceptorPropertyNames(this.value_);
+          %GetNamedInterceptorPropertyNames(this.value_);
       if (namedInterceptorNames) {
         propertyNames = propertyNames.concat(namedInterceptorNames);
         total += namedInterceptorNames.length;
@@ -649,13 +650,13 @@ ObjectMirror.prototype.propertyNames = function(kind, limit) {
   // Find all the indexed properties.
   if (kind & PropertyKind.Indexed) {
     // Get the local element names.
-    elementNames = %DebugLocalElementNames(this.value_);
+    elementNames = %GetLocalElementNames(this.value_);
     total += elementNames.length;
 
     // Get names for indexed interceptor properties.
     if (this.hasIndexedInterceptor() && (kind & PropertyKind.Indexed)) {
       var indexedInterceptorNames =
-          %DebugIndexedInterceptorElementNames(this.value_);
+          %GetIndexedInterceptorElementNames(this.value_);
       if (indexedInterceptorNames) {
         elementNames = elementNames.concat(indexedInterceptorNames);
         total += indexedInterceptorNames.length;
@@ -765,7 +766,7 @@ ObjectMirror.prototype.referencedBy = function(opt_max_objects) {
 ObjectMirror.prototype.toText = function() {
   var name;
   var ctor = this.constructorFunction();
-  if (ctor.isUndefined()) {
+  if (!ctor.isFunction()) {
     name = this.className();
   } else {
     name = ctor.name();
@@ -845,6 +846,33 @@ FunctionMirror.prototype.script = function() {
     if (script) {
       return MakeMirror(script);
     }
+  }
+};
+
+
+/**
+ * Returns the script source position for the function. Only makes sense
+ * for functions which has a script defined.
+ * @return {Number or undefined} in-script position for the function
+ */
+FunctionMirror.prototype.sourcePosition_ = function() {
+  // Return script if function is resolved. Otherwise just fall through
+  // to return undefined.
+  if (this.resolved()) {
+    return %FunctionGetScriptSourcePosition(this.value_);
+  }
+};
+
+
+/**
+ * Returns the script source location object for the function. Only makes sense
+ * for functions which has a script defined.
+ * @return {Location or undefined} in-script location for the function begin
+ */
+FunctionMirror.prototype.sourceLocation = function() {
+  if (this.resolved() && this.script()) {
+    return this.script().locationFromPosition(this.sourcePosition_(),
+                                              true);
   }
 };
 
@@ -1707,7 +1735,8 @@ ScriptMirror.prototype.value = function() {
 
 
 ScriptMirror.prototype.name = function() {
-  return this.script_.name;
+  // If we have name, we trust it more than sourceURL from comments
+  return this.script_.name || this.sourceUrlFromComment_();
 };
 
 
@@ -1767,16 +1796,21 @@ ScriptMirror.prototype.context = function() {
 };
 
 
-ScriptMirror.prototype.evalFromFunction = function() {
-  return MakeMirror(this.script_.eval_from_function);
+ScriptMirror.prototype.evalFromScript = function() {
+  return MakeMirror(this.script_.eval_from_script);
+};
+
+
+ScriptMirror.prototype.evalFromFunctionName = function() {
+  return MakeMirror(this.script_.eval_from_function_name);
 };
 
 
 ScriptMirror.prototype.evalFromLocation = function() {
-  var eval_from_function = this.evalFromFunction();
-  if (!eval_from_function.isUndefined()) {
-    var position = this.script_.eval_from_position;
-    return eval_from_function.script().locationFromPosition(position, true);
+  var eval_from_script = this.evalFromScript();
+  if (!eval_from_script.isUndefined()) {
+    var position = this.script_.eval_from_script_position;
+    return eval_from_script.locationFromPosition(position, true);
   }
 };
 
@@ -1795,6 +1829,29 @@ ScriptMirror.prototype.toText = function() {
   result += ')';
   return result;
 }
+
+
+/**
+ * Returns a suggested script URL from comments in script code (if found), 
+ * undefined otherwise. Used primarily by debuggers for identifying eval()'ed
+ * scripts. See 
+ * http://fbug.googlecode.com/svn/branches/firebug1.1/docs/ReleaseNotes_1.1.txt
+ * for details.
+ * 
+ * @return {?string} value for //@ sourceURL comment
+ */
+ScriptMirror.prototype.sourceUrlFromComment_ = function() {
+  if (!('sourceUrl_' in this) && this.source()) {
+    // TODO(608): the spaces in a regexp below had to be escaped as \040 
+    // because this file is being processed by js2c whose handling of spaces
+    // in regexps is broken.
+    // We're not using \s here to prevent \n from matching.
+    var sourceUrlPattern = /\/\/@[\040\t]sourceURL=[\040\t]*(\S+)[\040\t]*$/m;
+    var match = sourceUrlPattern.exec(this.source());
+    this.sourceUrl_ = match ? match[1] : undefined;
+  }
+  return this.sourceUrl_;
+};
 
 
 /**
@@ -1900,6 +1957,15 @@ JSONProtocolSerializer.prototype.inlineRefs_ = function() {
 }
 
 
+JSONProtocolSerializer.prototype.maxStringLength_ = function() {
+  if (IS_UNDEFINED(this.options_) ||
+      IS_UNDEFINED(this.options_.maxStringLength)) {
+    return kMaxProtocolStringLength;
+  }
+  return this.options_.maxStringLength;
+}
+
+
 JSONProtocolSerializer.prototype.add_ = function(mirror) {
   // If this mirror is already in the list just return.
   for (var i = 0; i < this.mirrors_.length; i++) {
@@ -1932,8 +1998,7 @@ JSONProtocolSerializer.prototype.serializeReferenceWithDisplayData_ =
       o.value = mirror.value();
       break;
     case STRING_TYPE:
-      // Limit string length.
-      o.value = mirror.toText();
+      o.value = mirror.getTruncatedValue(this.maxStringLength_());
       break;
     case FUNCTION_TYPE:
       o.name = mirror.name();
@@ -1997,11 +2062,12 @@ JSONProtocolSerializer.prototype.serialize_ = function(mirror, reference,
 
     case STRING_TYPE:
       // String values might have their value cropped to keep down size.
-      if (mirror.length() > kMaxProtocolStringLength) {
-        var str = mirror.value().substring(0, kMaxProtocolStringLength);
+      if (this.maxStringLength_() != -1 &&
+          mirror.length() > this.maxStringLength_()) {
+        var str = mirror.getTruncatedValue(this.maxStringLength_());
         content.value = str;
         content.fromIndex = 0;
-        content.toIndex = kMaxProtocolStringLength;
+        content.toIndex = this.maxStringLength_();
       } else {
         content.value = mirror.value();
       }
@@ -2054,12 +2120,17 @@ JSONProtocolSerializer.prototype.serialize_ = function(mirror, reference,
       // For compilation type eval emit information on the script from which
       // eval was called if a script is present.
       if (mirror.compilationType() == 1 &&
-          mirror.evalFromFunction().script()) {
+          mirror.evalFromScript()) {
         content.evalFromScript =
-            this.serializeReference(mirror.evalFromFunction().script());
+            this.serializeReference(mirror.evalFromScript());
         var evalFromLocation = mirror.evalFromLocation()
-        content.evalFromLocation = { line: evalFromLocation.line,
-                                     column: evalFromLocation.column}
+        if (evalFromLocation) {
+          content.evalFromLocation = { line: evalFromLocation.line,
+                                       column: evalFromLocation.column };
+        }
+        if (mirror.evalFromFunctionName()) {
+          content.evalFromFunctionName = mirror.evalFromFunctionName();
+        }
       }
       if (mirror.context()) {
         content.context = this.serializeReference(mirror.context());
@@ -2120,6 +2191,9 @@ JSONProtocolSerializer.prototype.serializeObject_ = function(mirror, content,
     }
     if (mirror.script()) {
       content.script = this.serializeReference(mirror.script());
+      content.scriptId = mirror.script().id();
+      
+      serializeLocationFields(mirror.sourceLocation(), content);
     }
   }
 
@@ -2148,6 +2222,31 @@ JSONProtocolSerializer.prototype.serializeObject_ = function(mirror, content,
     }
   }
   content.properties = p;
+}
+
+
+/**
+ * Serialize location information to the following JSON format:
+ *
+ *   "position":"<position>",
+ *   "line":"<line>",
+ *   "column":"<column>",
+ * 
+ * @param {SourceLocation} location The location to serialize, may be undefined.
+ */
+function serializeLocationFields (location, content) {
+  if (!location) {
+    return;
+  }                                                                     
+  content.position = location.position;
+  var line = location.line;
+  if (!IS_UNDEFINED(line)) {
+    content.line = line;
+  }
+  var column = location.column;
+  if (!IS_UNDEFINED(column)) {
+    content.column = column;
+  }
 }
 
 
@@ -2219,15 +2318,7 @@ JSONProtocolSerializer.prototype.serializeFrame_ = function(mirror, content) {
     x[i] = local;
   }
   content.locals = x;
-  content.position = mirror.sourcePosition();
-  var line = mirror.sourceLine();
-  if (!IS_UNDEFINED(line)) {
-    content.line = line;
-  }
-  var column = mirror.sourceColumn();
-  if (!IS_UNDEFINED(column)) {
-    content.column = column;
-  }
+  serializeLocationFields(mirror.sourceLocation(), content);
   var source_line_text = mirror.sourceLineText();
   if (!IS_UNDEFINED(source_line_text)) {
     content.sourceLineText = source_line_text;

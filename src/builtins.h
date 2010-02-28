@@ -31,66 +31,95 @@
 namespace v8 {
 namespace internal {
 
-// Define list of builtins implemented in C.
-#define BUILTIN_LIST_C(V)                          \
-  V(Illegal)                                       \
-                                                   \
-  V(EmptyFunction)                                 \
-                                                   \
-  V(ArrayCode)                                     \
-                                                   \
-  V(ArrayPush)                                     \
-  V(ArrayPop)                                      \
-                                                   \
-  V(HandleApiCall)                                 \
-  V(HandleApiCallAsFunction)                       \
-  V(HandleApiCallAsConstructor)
+// Specifies extra arguments required by a C++ builtin.
+enum BuiltinExtraArguments {
+  NO_EXTRA_ARGUMENTS = 0,
+  NEEDS_CALLED_FUNCTION = 1
+};
+
+
+// Define list of builtins implemented in C++.
+#define BUILTIN_LIST_C(V)                                           \
+  V(Illegal, NO_EXTRA_ARGUMENTS)                                    \
+                                                                    \
+  V(EmptyFunction, NO_EXTRA_ARGUMENTS)                              \
+                                                                    \
+  V(ArrayCodeGeneric, NO_EXTRA_ARGUMENTS)                           \
+                                                                    \
+  V(ArrayPush, NO_EXTRA_ARGUMENTS)                                  \
+  V(ArrayPop, NO_EXTRA_ARGUMENTS)                                   \
+  V(ArrayShift, NO_EXTRA_ARGUMENTS)                                 \
+  V(ArrayUnshift, NO_EXTRA_ARGUMENTS)                               \
+  V(ArraySlice, NO_EXTRA_ARGUMENTS)                                 \
+  V(ArraySplice, NO_EXTRA_ARGUMENTS)                                \
+                                                                    \
+  V(HandleApiCall, NEEDS_CALLED_FUNCTION)                           \
+  V(FastHandleApiCall, NO_EXTRA_ARGUMENTS)                          \
+  V(HandleApiCallConstruct, NEEDS_CALLED_FUNCTION)                  \
+  V(HandleApiCallAsFunction, NO_EXTRA_ARGUMENTS)                    \
+  V(HandleApiCallAsConstructor, NO_EXTRA_ARGUMENTS)
 
 
 // Define list of builtins implemented in assembly.
-#define BUILTIN_LIST_A(V)                                      \
-  V(ArgumentsAdaptorTrampoline, BUILTIN, UNINITIALIZED)        \
-  V(JSConstructCall,            BUILTIN, UNINITIALIZED)        \
-  V(JSConstructStubGeneric,     BUILTIN, UNINITIALIZED)        \
-  V(JSEntryTrampoline,          BUILTIN, UNINITIALIZED)        \
-  V(JSConstructEntryTrampoline, BUILTIN, UNINITIALIZED)        \
-                                                               \
-  V(LoadIC_Miss,                BUILTIN, UNINITIALIZED)        \
-  V(KeyedLoadIC_Miss,           BUILTIN, UNINITIALIZED)        \
-  V(StoreIC_Miss,               BUILTIN, UNINITIALIZED)        \
-  V(KeyedStoreIC_Miss,          BUILTIN, UNINITIALIZED)        \
-                                                               \
-  V(StoreIC_ExtendStorage,      BUILTIN, UNINITIALIZED)        \
-  V(KeyedStoreIC_ExtendStorage, BUILTIN, UNINITIALIZED)        \
-                                                               \
-  V(LoadIC_Initialize,          LOAD_IC, UNINITIALIZED)        \
-  V(LoadIC_PreMonomorphic,      LOAD_IC, PREMONOMORPHIC)       \
-  V(LoadIC_Normal,              LOAD_IC, MONOMORPHIC)          \
-  V(LoadIC_ArrayLength,         LOAD_IC, MONOMORPHIC)          \
-  V(LoadIC_StringLength,        LOAD_IC, MONOMORPHIC)          \
-  V(LoadIC_FunctionPrototype,   LOAD_IC, MONOMORPHIC)          \
-  V(LoadIC_Megamorphic,         LOAD_IC, MEGAMORPHIC)          \
-                                                               \
-  V(KeyedLoadIC_Initialize,     KEYED_LOAD_IC, UNINITIALIZED)  \
-  V(KeyedLoadIC_PreMonomorphic, KEYED_LOAD_IC, PREMONOMORPHIC) \
-  V(KeyedLoadIC_Generic,        KEYED_LOAD_IC, MEGAMORPHIC)    \
-                                                               \
-  V(StoreIC_Initialize,         STORE_IC, UNINITIALIZED)       \
-  V(StoreIC_Megamorphic,        STORE_IC, MEGAMORPHIC)         \
-                                                               \
-  V(KeyedStoreIC_Initialize,    KEYED_STORE_IC, UNINITIALIZED) \
-  V(KeyedStoreIC_Generic,       KEYED_STORE_IC, MEGAMORPHIC)   \
-                                                               \
-  /* Uses KeyedLoadIC_Initialize; must be after in list. */    \
-  V(FunctionCall,               BUILTIN, UNINITIALIZED)        \
-  V(FunctionApply,              BUILTIN, UNINITIALIZED)
-
+#define BUILTIN_LIST_A(V)                                                 \
+  V(ArgumentsAdaptorTrampoline, BUILTIN, UNINITIALIZED)                   \
+  V(JSConstructCall,            BUILTIN, UNINITIALIZED)                   \
+  V(JSConstructStubGeneric,     BUILTIN, UNINITIALIZED)                   \
+  V(JSConstructStubApi,         BUILTIN, UNINITIALIZED)                   \
+  V(JSEntryTrampoline,          BUILTIN, UNINITIALIZED)                   \
+  V(JSConstructEntryTrampoline, BUILTIN, UNINITIALIZED)                   \
+                                                                          \
+  V(LoadIC_Miss,                BUILTIN, UNINITIALIZED)                   \
+  V(KeyedLoadIC_Miss,           BUILTIN, UNINITIALIZED)                   \
+  V(StoreIC_Miss,               BUILTIN, UNINITIALIZED)                   \
+  V(KeyedStoreIC_Miss,          BUILTIN, UNINITIALIZED)                   \
+                                                                          \
+  V(LoadIC_Initialize,          LOAD_IC, UNINITIALIZED)                   \
+  V(LoadIC_PreMonomorphic,      LOAD_IC, PREMONOMORPHIC)                  \
+  V(LoadIC_Normal,              LOAD_IC, MONOMORPHIC)                     \
+  V(LoadIC_ArrayLength,         LOAD_IC, MONOMORPHIC)                     \
+  V(LoadIC_StringLength,        LOAD_IC, MONOMORPHIC)                     \
+  V(LoadIC_FunctionPrototype,   LOAD_IC, MONOMORPHIC)                     \
+  V(LoadIC_Megamorphic,         LOAD_IC, MEGAMORPHIC)                     \
+                                                                          \
+  V(KeyedLoadIC_Initialize,     KEYED_LOAD_IC, UNINITIALIZED)             \
+  V(KeyedLoadIC_PreMonomorphic, KEYED_LOAD_IC, PREMONOMORPHIC)            \
+  V(KeyedLoadIC_Generic,        KEYED_LOAD_IC, MEGAMORPHIC)               \
+  V(KeyedLoadIC_String,         KEYED_LOAD_IC, MEGAMORPHIC)               \
+  V(KeyedLoadIC_ExternalByteArray,          KEYED_LOAD_IC, MEGAMORPHIC)   \
+  V(KeyedLoadIC_ExternalUnsignedByteArray,  KEYED_LOAD_IC, MEGAMORPHIC)   \
+  V(KeyedLoadIC_ExternalShortArray,         KEYED_LOAD_IC, MEGAMORPHIC)   \
+  V(KeyedLoadIC_ExternalUnsignedShortArray, KEYED_LOAD_IC, MEGAMORPHIC)   \
+  V(KeyedLoadIC_ExternalIntArray,           KEYED_LOAD_IC, MEGAMORPHIC)   \
+  V(KeyedLoadIC_ExternalUnsignedIntArray,   KEYED_LOAD_IC, MEGAMORPHIC)   \
+  V(KeyedLoadIC_ExternalFloatArray,         KEYED_LOAD_IC, MEGAMORPHIC)   \
+  V(KeyedLoadIC_IndexedInterceptor,         KEYED_LOAD_IC, MEGAMORPHIC)   \
+                                                                          \
+  V(StoreIC_Initialize,         STORE_IC, UNINITIALIZED)                  \
+  V(StoreIC_ArrayLength,        STORE_IC, MONOMORPHIC)                    \
+  V(StoreIC_Megamorphic,        STORE_IC, MEGAMORPHIC)                    \
+                                                                          \
+  V(KeyedStoreIC_Initialize,    KEYED_STORE_IC, UNINITIALIZED)            \
+  V(KeyedStoreIC_Generic,       KEYED_STORE_IC, MEGAMORPHIC)              \
+  V(KeyedStoreIC_ExternalByteArray,          KEYED_STORE_IC, MEGAMORPHIC) \
+  V(KeyedStoreIC_ExternalUnsignedByteArray,  KEYED_STORE_IC, MEGAMORPHIC) \
+  V(KeyedStoreIC_ExternalShortArray,         KEYED_STORE_IC, MEGAMORPHIC) \
+  V(KeyedStoreIC_ExternalUnsignedShortArray, KEYED_STORE_IC, MEGAMORPHIC) \
+  V(KeyedStoreIC_ExternalIntArray,           KEYED_STORE_IC, MEGAMORPHIC) \
+  V(KeyedStoreIC_ExternalUnsignedIntArray,   KEYED_STORE_IC, MEGAMORPHIC) \
+  V(KeyedStoreIC_ExternalFloatArray,         KEYED_STORE_IC, MEGAMORPHIC) \
+                                                                          \
+  /* Uses KeyedLoadIC_Initialize; must be after in list. */               \
+  V(FunctionCall,               BUILTIN, UNINITIALIZED)                   \
+  V(FunctionApply,              BUILTIN, UNINITIALIZED)                   \
+                                                                          \
+  V(ArrayCode,                  BUILTIN, UNINITIALIZED)                   \
+  V(ArrayConstructCode,         BUILTIN, UNINITIALIZED)
 
 #ifdef ENABLE_DEBUGGER_SUPPORT
 // Define list of builtins used by the debugger implemented in assembly.
 #define BUILTIN_LIST_DEBUG_A(V)                                \
   V(Return_DebugBreak,          BUILTIN, DEBUG_BREAK)          \
-  V(Return_DebugBreakEntry,     BUILTIN, DEBUG_BREAK)          \
   V(ConstructCall_DebugBreak,   BUILTIN, DEBUG_BREAK)          \
   V(StubNoRegisters_DebugBreak, BUILTIN, DEBUG_BREAK)          \
   V(LoadIC_DebugBreak,          LOAD_IC, DEBUG_BREAK)          \
@@ -132,7 +161,8 @@ namespace internal {
   V(STRING_ADD_LEFT, 1)                  \
   V(STRING_ADD_RIGHT, 1)                 \
   V(APPLY_PREPARE, 1)                    \
-  V(APPLY_OVERFLOW, 1)
+  V(APPLY_OVERFLOW, 1)                   \
+  V(STRING_CHAR_AT, 1)
 
 
 class ObjectVisitor;
@@ -152,7 +182,7 @@ class Builtins : public AllStatic {
   static const char* Lookup(byte* pc);
 
   enum Name {
-#define DEF_ENUM_C(name) name,
+#define DEF_ENUM_C(name, ignore) name,
 #define DEF_ENUM_A(name, kind, state) name,
     BUILTIN_LIST_C(DEF_ENUM_C)
     BUILTIN_LIST_A(DEF_ENUM_A)
@@ -163,7 +193,7 @@ class Builtins : public AllStatic {
   };
 
   enum CFunctionId {
-#define DEF_ENUM_C(name) c_##name,
+#define DEF_ENUM_C(name, ignore) c_##name,
     BUILTIN_LIST_C(DEF_ENUM_C)
 #undef DEF_ENUM_C
     cfunction_count
@@ -195,8 +225,6 @@ class Builtins : public AllStatic {
   static Handle<Code> GetCode(JavaScript id, bool* resolved);
   static int NumberOfJavaScriptBuiltins() { return id_count; }
 
-  static Object* builtin_passed_function;
-
  private:
   // The external C++ functions called from the code.
   static Address c_functions_[cfunction_count];
@@ -209,15 +237,21 @@ class Builtins : public AllStatic {
   static const char* javascript_names_[id_count];
   static int javascript_argc_[id_count];
 
-  static void Generate_Adaptor(MacroAssembler* masm, CFunctionId id);
+  static void Generate_Adaptor(MacroAssembler* masm,
+                               CFunctionId id,
+                               BuiltinExtraArguments extra_args);
   static void Generate_JSConstructCall(MacroAssembler* masm);
   static void Generate_JSConstructStubGeneric(MacroAssembler* masm);
+  static void Generate_JSConstructStubApi(MacroAssembler* masm);
   static void Generate_JSEntryTrampoline(MacroAssembler* masm);
   static void Generate_JSConstructEntryTrampoline(MacroAssembler* masm);
   static void Generate_ArgumentsAdaptorTrampoline(MacroAssembler* masm);
 
   static void Generate_FunctionCall(MacroAssembler* masm);
   static void Generate_FunctionApply(MacroAssembler* masm);
+
+  static void Generate_ArrayCode(MacroAssembler* masm);
+  static void Generate_ArrayConstructCode(MacroAssembler* masm);
 };
 
 } }  // namespace v8::internal

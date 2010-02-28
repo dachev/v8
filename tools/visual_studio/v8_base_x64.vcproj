@@ -237,18 +237,6 @@
 				>
 			</File>
 			<File
-				RelativePath="..\..\src\x64\cfg-x64.cc"
-				>
-			</File>
-			<File
-				RelativePath="..\..\src\cfg.cc"
-				>
-			</File>
-			<File
-				RelativePath="..\..\src\cfg.h"
-				>
-			</File>
-			<File
 				RelativePath="..\..\src\char-predicates-inl.h"
 				>
 			</File>
@@ -349,6 +337,14 @@
 				>
 			</File>
 			<File
+				RelativePath="..\..\src\data-flow.cc"
+				>
+			</File>
+			<File
+				RelativePath="..\..\src\data-flow.h"
+				>
+			</File>
+			<File
 				RelativePath="..\..\src\dateparser.cc"
 				>
 			</File>
@@ -401,6 +397,18 @@
 				>
 			</File>
 			<File
+				RelativePath="..\..\src\x64\fast-codegen-x64.cc"
+				>
+			</File>
+                        <File
+                                RelativePath="..\..\src\fast-codegen.cc"
+                                >
+                        </File>
+                        <File
+                                RelativePath="..\..\src\fast-codegen.h"
+                                >
+                        </File>
+			<File
 				RelativePath="..\..\src\flags.cc"
 				>
 			</File>
@@ -437,6 +445,19 @@
 				>
 			</File>
 			<File
+				RelativePath="..\..\src\x64\full-codegen-x64.cc"
+				>
+			</File>
+			<File
+				RelativePath="..\..\src\full-codegen.cc"
+				>
+			</File>
+			<File
+				RelativePath="..\..\src\full-codegen.h"
+				>
+			</File>
+			<File
+
 				RelativePath="..\..\src\func-name-inferrer.cc"
 				>
 			</File>
@@ -486,6 +507,14 @@
 			</File>
 			<File
 				RelativePath="..\..\src\heap.h"
+				>
+			</File>
+			<File
+				RelativePath="..\..\src\heap-profiler.cc"
+				>
+			</File>
+			<File
+				RelativePath="..\..\src\heap-profiler.h"
 				>
 			</File>
 			<File
@@ -549,6 +578,14 @@
 				>
 			</File>
 			<File
+				RelativePath="..\..\src\liveedit.cc"
+				>
+			</File>
+			<File
+				RelativePath="..\..\src\liveedit.h"
+				>
+			</File>
+			<File
 				RelativePath="..\..\src\log.cc"
 				>
 			</File>
@@ -602,6 +639,10 @@
 			</File>
 			<File
 				RelativePath="..\..\src\natives.h"
+				>
+			</File>
+			<File
+				RelativePath="..\..\src\number-info.h"
 				>
 			</File>
 			<File
@@ -897,6 +938,10 @@
 				>
 			</File>
 			<File
+				RelativePath="..\..\src\virtual-frame-inl.h"
+				>
+			</File>
+			<File
 				RelativePath="..\..\src\virtual-frame.h"
 				>
 			</File>
@@ -949,7 +994,7 @@
 			Name="include"
 			>
 			<File
-				RelativePath="..\..\include\debug.h"
+				RelativePath="..\..\include\v8-debug.h"
 				>
 			</File>
 			<File

@@ -47,10 +47,10 @@ static void InitTraceEnv(TickSample* sample) {
 
 
 static void DoTrace(Address fp) {
-  trace_env.sample->fp = reinterpret_cast<uintptr_t>(fp);
+  trace_env.sample->fp = fp;
   // sp is only used to define stack high bound
   trace_env.sample->sp =
-      reinterpret_cast<uintptr_t>(trace_env.sample) - 10240;
+      reinterpret_cast<Address>(trace_env.sample) - 10240;
   StackTracer::Trace(trace_env.sample);
 }
 
@@ -160,11 +160,6 @@ static Address GetJsEntrySp() {
 v8::Handle<v8::Value> TraceExtension::JSEntrySP(const v8::Arguments& args) {
   CHECK_NE(0, GetJsEntrySp());
   return v8::Undefined();
-}
-
-
-static void CompileRun(const char* source) {
-  Script::Compile(String::New(source))->Run();
 }
 
 
@@ -320,6 +315,9 @@ TEST(PureJSStackTrace) {
       "         JSTrace();"
       "};\n"
       "OuterJSTrace();");
+  // The last JS function called.
+  CHECK_EQ(GetGlobalJSFunction("JSFuncDoTrace")->address(),
+           sample.function);
   CHECK_GT(sample.frames_count, 1);
   // Stack sampling will start from the caller of JSFuncDoTrace, i.e. "JSTrace"
   CheckRetAddrIsInJSFunction("JSTrace",
@@ -329,17 +327,16 @@ TEST(PureJSStackTrace) {
 }
 
 
-static void CFuncDoTrace() {
+static void CFuncDoTrace(byte dummy_parameter) {
   Address fp;
 #ifdef __GNUC__
   fp = reinterpret_cast<Address>(__builtin_frame_address(0));
-#elif defined _MSC_VER && defined V8_TARGET_ARCH_IA32
-  __asm mov [fp], ebp  // NOLINT
-#elif defined _MSC_VER && defined V8_TARGET_ARCH_X64
-  // TODO(X64): __asm extension is not supported by the Microsoft Visual C++
-  // 64-bit compiler.
-  fp = 0;
-  UNIMPLEMENTED();
+#elif defined _MSC_VER
+  // Approximate a frame pointer address. We compile without base pointers,
+  // so we can't trust ebp/rbp.
+  fp = &dummy_parameter - 2 * sizeof(void*);  // NOLINT
+#else
+#error Unexpected platform.
 #endif
   DoTrace(fp);
 }
@@ -347,7 +344,7 @@ static void CFuncDoTrace() {
 
 static int CFunc(int depth) {
   if (depth <= 0) {
-    CFuncDoTrace();
+    CFuncDoTrace(0);
     return 0;
   } else {
     return CFunc(depth - 1) + 1;

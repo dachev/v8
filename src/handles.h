@@ -133,6 +133,13 @@ class HandleScope {
     return result;
   }
 
+  // Deallocates any extensions used by the current scope.
+  static void DeleteExtensions();
+
+  static Address current_extensions_address();
+  static Address current_next_address();
+  static Address current_limit_address();
+
  private:
   // Prevent heap allocation or illegal handle scopes.
   HandleScope(const HandleScope&);
@@ -165,9 +172,6 @@ class HandleScope {
 
   // Extend the handle scope making room for more handles.
   static internal::Object** Extend();
-
-  // Deallocates any extensions used by the current scope.
-  static void DeleteExtensions();
 
   // Zaps the handles in the half-open interval [start, end).
   static void ZapRange(internal::Object** start, internal::Object** end);
@@ -236,6 +240,8 @@ Handle<Object> GetPropertyWithInterceptor(Handle<JSObject> receiver,
 
 Handle<Object> GetPrototype(Handle<Object> obj);
 
+Handle<Object> SetPrototype(Handle<JSObject> obj, Handle<Object> value);
+
 // Return the object's hidden properties object. If the object has no hidden
 // properties and create_if_needed is true, then a new hidden property object
 // will be allocated. Otherwise the Heap::undefined_value is returned.
@@ -265,18 +271,26 @@ v8::Handle<v8::Array> GetKeysForNamedInterceptor(Handle<JSObject> receiver,
                                                  Handle<JSObject> object);
 v8::Handle<v8::Array> GetKeysForIndexedInterceptor(Handle<JSObject> receiver,
                                                    Handle<JSObject> object);
+
+enum KeyCollectionType { LOCAL_ONLY, INCLUDE_PROTOS };
+
 // Computes the enumerable keys for a JSObject. Used for implementing
 // "for (n in object) { }".
-Handle<FixedArray> GetKeysInFixedArrayFor(Handle<JSObject> object);
+Handle<FixedArray> GetKeysInFixedArrayFor(Handle<JSObject> object,
+                                          KeyCollectionType type);
 Handle<JSArray> GetKeysFor(Handle<JSObject> object);
-Handle<FixedArray> GetEnumPropertyKeys(Handle<JSObject> object);
+Handle<FixedArray> GetEnumPropertyKeys(Handle<JSObject> object,
+                                       bool cache_result);
 
 // Computes the union of keys and return the result.
 // Used for implementing "for (n in object) { }"
 Handle<FixedArray> UnionOfKeys(Handle<FixedArray> first,
                                Handle<FixedArray> second);
 
-Handle<String> SubString(Handle<String> str, int start, int end);
+Handle<String> SubString(Handle<String> str,
+                         int start,
+                         int end,
+                         PretenureFlag pretenure = NOT_TENURED);
 
 
 // Sets the expected number of properties for the function's instances.
@@ -300,16 +314,26 @@ Handle<Object> SetPrototype(Handle<JSFunction> function,
                             Handle<Object> prototype);
 
 
-// Do lazy compilation of the given function. Returns true on success
-// and false if the compilation resulted in a stack overflow.
+// Does lazy compilation of the given function. Returns true on success and
+// false if the compilation resulted in a stack overflow.
 enum ClearExceptionFlag { KEEP_EXCEPTION, CLEAR_EXCEPTION };
 
-bool CompileLazyShared(Handle<SharedFunctionInfo> shared,
-                       ClearExceptionFlag flag,
-                       int loop_nesting);
+bool EnsureCompiled(Handle<SharedFunctionInfo> shared,
+                    ClearExceptionFlag flag);
 
-bool CompileLazy(Handle<JSFunction> function, ClearExceptionFlag flag);
-bool CompileLazyInLoop(Handle<JSFunction> function, ClearExceptionFlag flag);
+bool CompileLazyShared(Handle<SharedFunctionInfo> shared,
+                       ClearExceptionFlag flag);
+
+bool CompileLazy(Handle<JSFunction> function,
+                 Handle<Object> receiver,
+                 ClearExceptionFlag flag);
+
+bool CompileLazyInLoop(Handle<JSFunction> function,
+                       Handle<Object> receiver,
+                       ClearExceptionFlag flag);
+
+// Returns the lazy compilation stub for argc arguments.
+Handle<Code> ComputeLazyCompile(int argc);
 
 // These deal with lazily loaded properties.
 void SetupLazy(Handle<JSObject> obj,

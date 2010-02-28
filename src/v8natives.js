@@ -41,6 +41,7 @@
 const $isNaN = GlobalIsNaN;
 const $isFinite = GlobalIsFinite;
 
+
 // ----------------------------------------------------------------------------
 
 
@@ -55,7 +56,7 @@ function InstallFunctions(object, attributes, functions) {
     %FunctionSetName(f, key);
     %SetProperty(object, key, f, attributes);
   }
-  %TransformToFastProperties(object);
+  %ToFastProperties(object);
 }
 
 // Emulates JSC by installing functions on a hidden prototype that
@@ -87,7 +88,7 @@ function GlobalIsFinite(number) {
 
 // ECMA-262 - 15.1.2.2
 function GlobalParseInt(string, radix) {
-  if (radix === void 0) {
+  if (IS_UNDEFINED(radix)) {
     // Some people use parseInt instead of Math.floor.  This
     // optimization makes parseInt on a Smi 12 times faster (60ns
     // vs 800ns).  The following optimization makes parseInt on a
@@ -95,8 +96,8 @@ function GlobalParseInt(string, radix) {
     // they make parseInt on a string 1.4% slower (274ns vs 270ns).
     if (%_IsSmi(string)) return string;
     if (IS_NUMBER(string) &&
-        ((string < -0.01 && -1e9 < string) ||
-            (0.01 < string && string < 1e9))) {
+        ((0.01 < string && string < 1e9) ||
+            (-1e9 < string && string < -0.01))) {
       // Truncate number.
       return string | 0;
     }
@@ -196,10 +197,7 @@ $Object.prototype.constructor = $Object;
 
 // ECMA-262 - 15.2.4.2
 function ObjectToString() {
-  var c = %_ClassOf(this);
-  // Hide Arguments from the outside.
-  if (c === 'Arguments') c  = 'Object';
-  return "[object " + c + "]";
+  return "[object " + %_ClassOf(ToObject(this)) + "]";
 }
 
 
@@ -211,7 +209,7 @@ function ObjectToLocaleString() {
 
 // ECMA-262 - 15.2.4.4
 function ObjectValueOf() {
-  return this;
+  return ToObject(this);
 }
 
 
@@ -276,6 +274,428 @@ function ObjectLookupSetter(name) {
 }
 
 
+function ObjectKeys(obj) {
+  if ((!IS_OBJECT(obj) || IS_NULL_OR_UNDEFINED(obj)) && !IS_FUNCTION(obj))
+    throw MakeTypeError("obj_ctor_property_non_object", ["keys"]);
+  return %LocalKeys(obj);
+}
+
+
+// ES5 8.10.1.
+function IsAccessorDescriptor(desc) {
+  if (IS_UNDEFINED(desc)) return false;
+  return desc.hasGetter_ || desc.hasSetter_;
+}
+
+
+// ES5 8.10.2.
+function IsDataDescriptor(desc) {
+  if (IS_UNDEFINED(desc)) return false;
+  return desc.hasValue_ || desc.hasWritable_;
+}
+
+
+// ES5 8.10.3.
+function IsGenericDescriptor(desc) {
+  return !(IsAccessorDescriptor(desc) || IsDataDescriptor(desc));
+}
+
+
+function IsInconsistentDescriptor(desc) {
+  return IsAccessorDescriptor(desc) && IsDataDescriptor(desc);
+}
+
+// ES5 8.10.4
+function FromPropertyDescriptor(desc) {
+  if (IS_UNDEFINED(desc)) return desc;
+  var obj = new $Object();
+  if (IsDataDescriptor(desc)) {
+    obj.value = desc.getValue();
+    obj.writable = desc.isWritable();
+  }
+  if (IsAccessorDescriptor(desc)) {
+    obj.get = desc.getGet();
+    obj.set = desc.getSet();
+  }
+  obj.enumerable = desc.isEnumerable();
+  obj.configurable = desc.isConfigurable();
+  return obj;
+}
+
+// ES5 8.10.5.
+function ToPropertyDescriptor(obj) {
+  if (!IS_OBJECT(obj)) {
+    throw MakeTypeError("property_desc_object", [obj]);
+  }
+  var desc = new PropertyDescriptor();
+
+  if ("enumerable" in obj) {
+    desc.setEnumerable(ToBoolean(obj.enumerable));
+  }
+
+  if ("configurable" in obj) {
+    desc.setConfigurable(ToBoolean(obj.configurable));
+  }
+
+  if ("value" in obj) {
+    desc.setValue(obj.value);
+  }
+
+  if ("writable" in obj) {
+    desc.setWritable(ToBoolean(obj.writable));
+  }
+
+  if ("get" in obj) {
+    var get = obj.get;
+    if (!IS_UNDEFINED(get) && !IS_FUNCTION(get)) {
+      throw MakeTypeError("getter_must_be_callable", [get]);
+    }
+    desc.setGet(get);
+  }
+
+  if ("set" in obj) {
+    var set = obj.set;
+    if (!IS_UNDEFINED(set) && !IS_FUNCTION(set)) {
+      throw MakeTypeError("setter_must_be_callable", [set]);
+    }
+    desc.setSet(set);
+  }
+
+  if (IsInconsistentDescriptor(desc)) {
+    throw MakeTypeError("value_and_accessor", [obj]);
+  }
+  return desc;
+}
+
+
+function PropertyDescriptor() {
+  // Initialize here so they are all in-object and have the same map.
+  // Default values from ES5 8.6.1.
+  this.value_ = void 0;
+  this.hasValue_ = false;
+  this.writable_ = false;
+  this.hasWritable_ = false;
+  this.enumerable_ = false;
+  this.hasEnumerable_ = false;
+  this.configurable_ = false;
+  this.hasConfigurable_ = false;
+  this.get_ = void 0;
+  this.hasGetter_ = false;
+  this.set_ = void 0;
+  this.hasSetter_ = false;
+}
+
+
+PropertyDescriptor.prototype.setValue = function(value) {
+  this.value_ = value;
+  this.hasValue_ = true;
+}
+
+
+PropertyDescriptor.prototype.getValue = function() {
+  return this.value_;
+}
+
+
+PropertyDescriptor.prototype.hasValue = function() {
+  return this.hasValue_;
+}
+
+
+PropertyDescriptor.prototype.setEnumerable = function(enumerable) {
+  this.enumerable_ = enumerable;
+  this.hasEnumerable_ = true;
+}
+
+
+PropertyDescriptor.prototype.isEnumerable = function () {
+  return this.enumerable_;
+}
+
+
+PropertyDescriptor.prototype.hasEnumerable = function() {
+  return this.hasEnumerable_;
+}
+
+
+PropertyDescriptor.prototype.setWritable = function(writable) {
+  this.writable_ = writable;
+  this.hasWritable_ = true;
+}
+
+
+PropertyDescriptor.prototype.isWritable = function() {
+  return this.writable_;
+}
+
+
+PropertyDescriptor.prototype.setConfigurable = function(configurable) {
+  this.configurable_ = configurable;
+  this.hasConfigurable_ = true;
+}
+
+
+PropertyDescriptor.prototype.hasConfigurable = function() {
+  return this.hasConfigurable_;
+}
+
+
+PropertyDescriptor.prototype.isConfigurable = function() {
+  return this.configurable_;
+}
+
+
+PropertyDescriptor.prototype.setGet = function(get) {
+  this.get_ = get;
+  this.hasGetter_ = true;
+}
+
+
+PropertyDescriptor.prototype.getGet = function() {
+  return this.get_;
+}
+
+
+PropertyDescriptor.prototype.hasGetter = function() {
+  return this.hasGetter_;
+}
+
+
+PropertyDescriptor.prototype.setSet = function(set) {
+  this.set_ = set;
+  this.hasSetter_ = true;
+}
+
+
+PropertyDescriptor.prototype.getSet = function() {
+  return this.set_;
+}
+
+
+PropertyDescriptor.prototype.hasSetter = function() {
+  return this.hasSetter_;
+}
+
+
+
+// ES5 section 8.12.1.
+function GetOwnProperty(obj, p) {
+  var desc = new PropertyDescriptor();
+  
+  // An array with:
+  //  obj is a data property [false, value, Writeable, Enumerable, Configurable]
+  //  obj is an accessor [true, Get, Set, Enumerable, Configurable]
+  var props = %GetOwnProperty(ToObject(obj), ToString(p));
+
+  if (IS_UNDEFINED(props)) return void 0;
+
+  // This is an accessor
+  if (props[0]) {
+    desc.setGet(props[1]);
+    desc.setSet(props[2]);
+  } else {
+    desc.setValue(props[1]);
+    desc.setWritable(props[2]);
+  }
+  desc.setEnumerable(props[3]);
+  desc.setConfigurable(props[4]);
+
+  return desc;
+}
+
+
+// ES5 section 8.12.2.
+function GetProperty(obj, p) {
+  var prop = GetOwnProperty(obj);
+  if (!IS_UNDEFINED(prop)) return prop;
+  var proto = obj.__proto__;
+  if (IS_NULL(proto)) return void 0;
+  return GetProperty(proto, p);
+}
+
+
+// ES5 section 8.12.6
+function HasProperty(obj, p) {
+  var desc = GetProperty(obj, p);
+  return IS_UNDEFINED(desc) ? false : true;
+}
+
+
+// ES5 8.12.9.  
+function DefineOwnProperty(obj, p, desc, should_throw) {
+  var current = GetOwnProperty(obj, p);
+  var extensible = %IsExtensible(ToObject(obj));
+
+  // Error handling according to spec.
+  // Step 3
+  if (IS_UNDEFINED(current) && !extensible)
+    throw MakeTypeError("define_disallowed", ["defineProperty"]);
+
+  if (!IS_UNDEFINED(current) && !current.isConfigurable()) {
+    // Step 7
+    if (desc.isConfigurable() ||  desc.isEnumerable() != current.isEnumerable())
+      throw MakeTypeError("redefine_disallowed", ["defineProperty"]);
+    // Step 9
+    if (IsDataDescriptor(current) != IsDataDescriptor(desc))
+      throw MakeTypeError("redefine_disallowed", ["defineProperty"]);
+    // Step 10
+    if (IsDataDescriptor(current) && IsDataDescriptor(desc)) {
+      if (!current.isWritable() && desc.isWritable())
+        throw MakeTypeError("redefine_disallowed", ["defineProperty"]);
+      if (!current.isWritable() && desc.hasValue() &&
+          !SameValue(desc.getValue(), current.getValue())) {
+        throw MakeTypeError("redefine_disallowed", ["defineProperty"]);
+      }
+    }
+    // Step 11
+    if (IsAccessorDescriptor(desc) && IsAccessorDescriptor(current)) {
+      if (desc.hasSetter() && !SameValue(desc.getSet(), current.getSet())){
+        throw MakeTypeError("redefine_disallowed", ["defineProperty"]);
+      }
+      if (desc.hasGetter() && !SameValue(desc.getGet(),current.getGet()))
+        throw MakeTypeError("redefine_disallowed", ["defineProperty"]);
+    }
+  }
+
+  // Send flags - enumerable and configurable are common - writable is 
+  // only send to the data descriptor.
+  // Take special care if enumerable and configurable is not defined on
+  // desc (we need to preserve the existing values from current).
+  var flag = NONE;
+  if (desc.hasEnumerable()) {
+    flag |= desc.isEnumerable() ? 0 : DONT_ENUM;
+  } else if (!IS_UNDEFINED(current)) {
+    flag |= current.isEnumerable() ? 0 : DONT_ENUM;
+  } else {
+    flag |= DONT_ENUM;
+  }
+
+  if (desc.hasConfigurable()) {
+    flag |= desc.isConfigurable() ? 0 : DONT_DELETE;
+  } else if (!IS_UNDEFINED(current)) {
+    flag |= current.isConfigurable() ? 0 : DONT_DELETE;
+  } else
+    flag |= DONT_DELETE;
+
+  if (IsDataDescriptor(desc) || IsGenericDescriptor(desc)) {
+    flag |= desc.isWritable() ? 0 : READ_ONLY;
+    %DefineOrRedefineDataProperty(obj, p, desc.getValue(), flag);
+  } else {
+    if (desc.hasGetter() && IS_FUNCTION(desc.getGet())) {
+       %DefineOrRedefineAccessorProperty(obj, p, GETTER, desc.getGet(), flag);
+    }
+    if (desc.hasSetter() && IS_FUNCTION(desc.getSet())) {
+      %DefineOrRedefineAccessorProperty(obj, p, SETTER, desc.getSet(), flag);
+    }
+  }
+  return true;
+}
+
+
+// ES5 section 15.2.3.2.
+function ObjectGetPrototypeOf(obj) {
+  if ((!IS_OBJECT(obj) || IS_NULL_OR_UNDEFINED(obj)) && !IS_FUNCTION(obj))
+    throw MakeTypeError("obj_ctor_property_non_object", ["getPrototypeOf"]);
+  return obj.__proto__;
+}
+
+
+// ES5 section 15.2.3.3 
+function ObjectGetOwnPropertyDescriptor(obj, p) {
+  if ((!IS_OBJECT(obj) || IS_NULL_OR_UNDEFINED(obj)) && !IS_FUNCTION(obj))
+    throw MakeTypeError("obj_ctor_property_non_object", ["getOwnPropertyDescriptor"]);
+  var desc = GetOwnProperty(obj, p);
+  return FromPropertyDescriptor(desc);
+}
+
+
+// ES5 section 15.2.3.4.
+function ObjectGetOwnPropertyNames(obj) {
+  if ((!IS_OBJECT(obj) || IS_NULL_OR_UNDEFINED(obj)) && !IS_FUNCTION(obj))
+    throw MakeTypeError("obj_ctor_property_non_object", ["getOwnPropertyNames"]);
+
+  // Find all the indexed properties.
+
+  // Get the local element names.
+  var propertyNames = %GetLocalElementNames(obj);
+
+  // Get names for indexed interceptor properties.
+  if (%GetInterceptorInfo(obj) & 1) {
+    var indexedInterceptorNames =
+        %GetIndexedInterceptorElementNames(obj);
+    if (indexedInterceptorNames)
+      propertyNames = propertyNames.concat(indexedInterceptorNames);
+  }
+
+  // Find all the named properties.
+
+  // Get the local property names.
+  propertyNames = propertyNames.concat(%GetLocalPropertyNames(obj));
+
+  // Get names for named interceptor properties if any.
+
+  if (%GetInterceptorInfo(obj) & 2) {
+    var namedInterceptorNames =
+        %GetNamedInterceptorPropertyNames(obj);
+    if (namedInterceptorNames) {
+      propertyNames = propertyNames.concat(namedInterceptorNames);
+    }
+  }
+
+  // Property names are expected to be strings.
+  for (var i = 0; i < propertyNames.length; ++i)
+    propertyNames[i] = ToString(propertyNames[i]);
+
+  return propertyNames;
+}
+
+
+// ES5 section 15.2.3.5.
+function ObjectCreate(proto, properties) {
+  if (!IS_OBJECT(proto) && !IS_NULL(proto)) {
+    throw MakeTypeError("proto_object_or_null", [proto]);
+  }
+  var obj = new $Object();
+  obj.__proto__ = proto;
+  if (!IS_UNDEFINED(properties)) ObjectDefineProperties(obj, properties);
+  return obj;
+}
+
+
+// ES5 section 15.2.3.6.
+function ObjectDefineProperty(obj, p, attributes) {
+  if ((!IS_OBJECT(obj) || IS_NULL_OR_UNDEFINED(obj)) && !IS_FUNCTION(obj))
+    throw MakeTypeError("obj_ctor_property_non_object", ["defineProperty"]);
+  var name = ToString(p);
+  var desc = ToPropertyDescriptor(attributes);
+  DefineOwnProperty(obj, name, desc, true);
+  return obj;
+}
+
+
+// ES5 section 15.2.3.7.
+function ObjectDefineProperties(obj, properties) {
+ if ((!IS_OBJECT(obj) || IS_NULL_OR_UNDEFINED(obj)) && !IS_FUNCTION(obj))
+    throw MakeTypeError("obj_ctor_property_non_object", ["defineProperties"]);
+  var props = ToObject(properties);
+  var key_values = [];
+  for (var key in props) {
+    if (%HasLocalProperty(props, key)) {
+      key_values.push(key);
+      var value = props[key];
+      var desc = ToPropertyDescriptor(value);
+      key_values.push(desc);
+    }
+  }
+  for (var i = 0; i < key_values.length; i += 2) {
+    var key = key_values[i];
+    var desc = key_values[i + 1];
+    DefineOwnProperty(obj, key, desc, true);
+  }
+  return obj;
+}
+
+
 %SetCode($Object, function(x) {
   if (%_IsConstructCall()) {
     if (x == null) return this;
@@ -303,6 +723,15 @@ function SetupObject() {
     "__lookupGetter__", ObjectLookupGetter,
     "__defineSetter__", ObjectDefineSetter,
     "__lookupSetter__", ObjectLookupSetter
+  ));
+  InstallFunctions($Object, DONT_ENUM, $Array(
+    "keys", ObjectKeys,
+    "create", ObjectCreate,
+    "defineProperty", ObjectDefineProperty,
+    "defineProperties", ObjectDefineProperties,
+    "getPrototypeOf", ObjectGetPrototypeOf,
+    "getOwnPropertyDescriptor", ObjectGetOwnPropertyDescriptor,
+    "getOwnPropertyNames", ObjectGetOwnPropertyNames
   ));
 }
 
@@ -485,7 +914,7 @@ function SetupNumber() {
                "POSITIVE_INFINITY",
                1/0,
                DONT_ENUM | DONT_DELETE | READ_ONLY);
-  %TransformToFastProperties($Number);
+  %ToFastProperties($Number);
 
   // Setup non-enumerable functions on the Number prototype object.
   InstallFunctions($Number.prototype, DONT_ENUM, $Array(
@@ -514,7 +943,7 @@ function FunctionSourceString(func) {
   }
 
   var source = %FunctionGetSourceCode(func);
-  if (!IS_STRING(source)) {
+  if (!IS_STRING(source) || %FunctionIsBuiltin(func)) {
     var name = %FunctionGetName(func);
     if (name) {
       // Mimic what KJS does.
@@ -524,12 +953,6 @@ function FunctionSourceString(func) {
     }
   }
 
-  // Censor occurrences of internal calls.  We do that for all
-  // functions and don't cache under the assumption that people rarly
-  // convert functions to strings.  Note that we (apparently) can't
-  // use regular expression literals in natives files.
-  var regexp = ORIGINAL_REGEXP("%(\\w+\\()", "gm");
-  if (source.match(regexp)) source = source.replace(regexp, "$1");
   var name = %FunctionGetName(func);
   return 'function ' + name + source;
 }

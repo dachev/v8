@@ -42,6 +42,7 @@
 #include <mach/mach.h>
 #include <mach/semaphore.h>
 #include <mach/task.h>
+#include <mach/vm_statistics.h>
 #include <sys/time.h>
 #include <sys/resource.h>
 #include <sys/types.h>
@@ -123,12 +124,22 @@ size_t OS::AllocateAlignment() {
 }
 
 
+// Constants used for mmap.
+// kMmapFd is used to pass vm_alloc flags to tag the region with the user
+// defined tag 255 This helps identify V8-allocated regions in memory analysis
+// tools like vmmap(1).
+static const int kMmapFd = VM_MAKE_TAG(255);
+static const off_t kMmapFdOffset = 0;
+
+
 void* OS::Allocate(const size_t requested,
                    size_t* allocated,
                    bool is_executable) {
   const size_t msize = RoundUp(requested, getpagesize());
   int prot = PROT_READ | PROT_WRITE | (is_executable ? PROT_EXEC : 0);
-  void* mbase = mmap(NULL, msize, prot, MAP_PRIVATE | MAP_ANON, -1, 0);
+  void* mbase = mmap(NULL, msize, prot,
+                     MAP_PRIVATE | MAP_ANON,
+                     kMmapFd, kMmapFdOffset);
   if (mbase == MAP_FAILED) {
     LOG(StringEvent("OS::Allocate", "mmap failed"));
     return NULL;
@@ -141,7 +152,9 @@ void* OS::Allocate(const size_t requested,
 
 void OS::Free(void* address, const size_t size) {
   // TODO(1240712): munmap has a return value which is ignored here.
-  munmap(address, size);
+  int result = munmap(address, size);
+  USE(result);
+  ASSERT(result == 0);
 }
 
 
@@ -211,8 +224,17 @@ void OS::LogSharedLibraryAddresses() {
   for (unsigned int i = 0; i < images_count; ++i) {
     const mach_header* header = _dyld_get_image_header(i);
     if (header == NULL) continue;
+#if V8_HOST_ARCH_X64
+    uint64_t size;
+    char* code_ptr = getsectdatafromheader_64(
+        reinterpret_cast<const mach_header_64*>(header),
+        SEG_TEXT,
+        SECT_TEXT,
+        &size);
+#else
     unsigned int size;
     char* code_ptr = getsectdatafromheader(header, SEG_TEXT, SECT_TEXT, &size);
+#endif
     if (code_ptr == NULL) continue;
     const uintptr_t slide = _dyld_get_image_vmaddr_slide(i);
     const uintptr_t start = reinterpret_cast<uintptr_t>(code_ptr) + slide;
@@ -222,8 +244,11 @@ void OS::LogSharedLibraryAddresses() {
 }
 
 
-double OS::nan_value() {
-  return NAN;
+uint64_t OS::CpuFeaturesImpliedByPlatform() {
+  // MacOSX requires all these to install so we can assume they are present.
+  // These constants are defined by the CPUid instructions.
+  const uint64_t one = 1;
+  return (one << SSE2) | (one << CMOV) | (one << RDTSC) | (one << CPUID);
 }
 
 
@@ -231,6 +256,24 @@ int OS::ActivationFrameAlignment() {
   // OS X activation frames must be 16 byte-aligned; see "Mac OS X ABI
   // Function Call Guide".
   return 16;
+}
+
+
+const char* OS::LocalTimezone(double time) {
+  if (isnan(time)) return "";
+  time_t tv = static_cast<time_t>(floor(time/msPerSecond));
+  struct tm* t = localtime(&tv);
+  if (NULL == t) return "";
+  return t->tm_zone;
+}
+
+
+double OS::LocalTimeOffset() {
+  time_t tv = time(NULL);
+  struct tm* t = localtime(&tv);
+  // tm_gmtoff includes any daylight savings offset, so subtract it.
+  return static_cast<double>(t->tm_gmtoff * msPerSecond -
+                             (t->tm_isdst > 0 ? 3600 * msPerSecond : 0));
 }
 
 
@@ -269,9 +312,6 @@ int OS::StackWalk(Vector<StackFrame> frames) {
 }
 
 
-// Constants used for mmap.
-static const int kMmapFd = -1;
-static const int kMmapFdOffset = 0;
 
 
 VirtualMemory::VirtualMemory(size_t size) {
@@ -309,7 +349,7 @@ bool VirtualMemory::Commit(void* address, size_t size, bool is_executable) {
 
 bool VirtualMemory::Uncommit(void* address, size_t size) {
   return mmap(address, size, PROT_NONE,
-              MAP_PRIVATE | MAP_ANON | MAP_NORESERVE,
+              MAP_PRIVATE | MAP_ANON | MAP_NORESERVE | MAP_FIXED,
               kMmapFd, kMmapFdOffset) != MAP_FAILED;
 }
 
@@ -537,9 +577,9 @@ class Sampler::PlatformData : public Malloced {
                              flavor,
                              reinterpret_cast<natural_t*>(&state),
                              &count) == KERN_SUCCESS) {
-          sample.pc = state.REGISTER_FIELD(ip);
-          sample.sp = state.REGISTER_FIELD(sp);
-          sample.fp = state.REGISTER_FIELD(bp);
+          sample.pc = reinterpret_cast<Address>(state.REGISTER_FIELD(ip));
+          sample.sp = reinterpret_cast<Address>(state.REGISTER_FIELD(sp));
+          sample.fp = reinterpret_cast<Address>(state.REGISTER_FIELD(bp));
           sampler_->SampleStack(&sample);
         }
         thread_resume(profiled_thread_);

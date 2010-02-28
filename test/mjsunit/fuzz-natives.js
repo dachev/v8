@@ -27,6 +27,9 @@
 
 // Flags: --allow-natives-syntax
 
+var RUN_WITH_ALL_ARGUMENT_ENTRIES = false;
+var kOnManyArgumentsRemove = 5;
+
 function makeArguments() {
   var result = [ ];
   result.push(17);
@@ -74,13 +77,23 @@ function testArgumentTypes(name, argc) {
   var func = makeFunction(name, argc);
   while (hasMore) {
     var argPool = makeArguments();
+    // When we have 5 or more arguments we lower the amount of tests cases
+    // by randomly removing kOnManyArgumentsRemove entries
+    var numArguments = RUN_WITH_ALL_ARGUMENT_ENTRIES ?
+      kArgObjects : kArgObjects-kOnManyArgumentsRemove;
+    if (argc >= 5 && !RUN_WITH_ALL_ARGUMENT_ENTRIES) {
+      for (var i = 0; i < kOnManyArgumentsRemove; i++) {
+        var rand = Math.floor(Math.random() * (kArgObjects - i));
+        argPool.splice(rand,1);
+      }
+    }
     var current = type;
     var hasMore = false;
     var argList = [ ];
     for (var i = 0; i < argc; i++) {
-      var index = current % kArgObjects;
-      current = (current / kArgObjects) << 0;
-      if (index != (kArgObjects - 1))
+      var index = current % numArguments;
+      current = (current / numArguments) << 0;
+      if (index != (numArguments - 1))
         hasMore = true;
       argList.push(argPool[index]);
     }
@@ -95,7 +108,11 @@ function testArgumentTypes(name, argc) {
 
 var knownProblems = {
   "Abort": true,
-  
+
+  // Avoid calling the concat operation, because weird lengths
+  // may lead to out-of-memory.
+  "StringBuilderConcat": true,
+
   // These functions use pseudo-stack-pointers and are not robust
   // to unexpected integer values.
   "DebugEvaluate": true,
@@ -114,7 +131,7 @@ var knownProblems = {
   // the rest of the tests.
   "DisableAccessChecks": true,
   "EnableAccessChecks": true,
-  
+
   // These functions should not be callable as runtime functions.
   "NewContext": true,
   "NewArgumentsFast": true,
@@ -127,8 +144,10 @@ var knownProblems = {
   "IS_VAR": true,
   "ResolvePossiblyDirectEval": true,
   "Log": true,
+  "DeclareGlobals": true,
 
-  "CollectStackTrace": true
+  "PromoteScheduledException": true,
+  "DeleteHandleScopeExtensions": true
 };
 
 var currentlyUncallable = {

@@ -48,23 +48,33 @@ template <typename T, class P>
 class List {
  public:
 
+  List() { Initialize(0); }
   INLINE(explicit List(int capacity)) { Initialize(capacity); }
   INLINE(~List()) { DeleteData(data_); }
 
-  INLINE(void* operator new(size_t size)) { return P::New(size); }
+  // Deallocates memory used by the list and leaves the list in a consistent
+  // empty state.
+  void Free() {
+    DeleteData(data_);
+    Initialize(0);
+  }
+
+  INLINE(void* operator new(size_t size)) {
+      return P::New(static_cast<int>(size));
+  }
   INLINE(void operator delete(void* p, size_t)) { return P::Delete(p); }
 
   // Returns a reference to the element at index i.  This reference is
   // not safe to use after operations that can change the list's
   // backing store (eg, Add).
   inline T& operator[](int i) const  {
-    ASSERT(0 <= i && i < length_);
+    ASSERT(0 <= i);
+    ASSERT(i < length_);
     return data_[i];
   }
   inline T& at(int i) const  { return operator[](i); }
-  inline T& last() const {
-    return at(length_ - 1);
-  }
+  inline T& last() const { return at(length_ - 1); }
+  inline T& first() const { return at(0); }
 
   INLINE(bool is_empty() const) { return length_ == 0; }
   INLINE(int length() const) { return length_; }

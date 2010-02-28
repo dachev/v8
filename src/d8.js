@@ -102,7 +102,8 @@ Debug.ScriptCompilationType = { Host: 0,
 Debug.ScopeType = { Global: 0,
                     Local: 1,
                     With: 2,
-                    Closure: 3 };
+                    Closure: 3,
+                    Catch: 4 };
 
 
 // Current debug state.
@@ -900,6 +901,10 @@ function formatScope_(scope) {
       result += 'With, ';
       result += '#' + scope.object.ref + '#';
       break;
+    case Debug.ScopeType.Catch:
+      result += 'Catch, ';
+      result += '#' + scope.object.ref + '#';
+      break;
     case Debug.ScopeType.Closure:
       result += 'Closure';
       break;
@@ -1143,7 +1148,7 @@ function DebugResponseDetails(response) {
  * @constructor
  */
 function ProtocolPackage(json) {
-  this.packet_ = eval('(' + json + ')');
+  this.packet_ = JSON.parse(json);
   this.refs_ = [];
   if (this.packet_.refs) {
     for (var i = 0; i < this.packet_.refs.length; i++) {

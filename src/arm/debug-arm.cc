@@ -34,28 +34,41 @@ namespace v8 {
 namespace internal {
 
 #ifdef ENABLE_DEBUGGER_SUPPORT
-// Currently debug break is not supported in frame exit code on ARM.
 bool BreakLocationIterator::IsDebugBreakAtReturn() {
-  return false;
+  return Debug::IsDebugBreakAtReturn(rinfo());
 }
 
 
-// Currently debug break is not supported in frame exit code on ARM.
 void BreakLocationIterator::SetDebugBreakAtReturn() {
-  UNIMPLEMENTED();
+  // Patch the code changing the return from JS function sequence from
+  //   mov sp, fp
+  //   ldmia sp!, {fp, lr}
+  //   add sp, sp, #4
+  //   bx lr
+  // to a call to the debug break return code.
+  //   mov lr, pc
+  //   ldr pc, [pc, #-4]
+  //   <debug break return code entry point address>
+  //   bktp 0
+  CodePatcher patcher(rinfo()->pc(), 4);
+  patcher.masm()->mov(v8::internal::lr, v8::internal::pc);
+  patcher.masm()->ldr(v8::internal::pc, MemOperand(v8::internal::pc, -4));
+  patcher.Emit(Debug::debug_break_return()->entry());
+  patcher.masm()->bkpt(0);
 }
 
 
-// Currently debug break is not supported in frame exit code on ARM.
+// Restore the JS frame exit code.
 void BreakLocationIterator::ClearDebugBreakAtReturn() {
-  UNIMPLEMENTED();
+  rinfo()->PatchCode(original_rinfo()->pc(),
+                     Assembler::kJSReturnSequenceLength);
 }
 
 
+// A debug break in the exit code is identified by a call.
 bool Debug::IsDebugBreakAtReturn(RelocInfo* rinfo) {
   ASSERT(RelocInfo::IsJSReturn(rinfo->rmode()));
-  // Currently debug break is not supported in frame exit code on ARM.
-  return false;
+  return rinfo->IsPatchedReturnSequence();
 }
 
 
@@ -85,7 +98,7 @@ static void Generate_DebugBreakCallHelper(MacroAssembler* masm,
   __ mov(r0, Operand(0));  // no arguments
   __ mov(r1, Operand(ExternalReference::debug_break()));
 
-  CEntryDebugBreakStub ceb;
+  CEntryStub ceb(1, ExitFrame::MODE_DEBUG);
   __ CallStub(&ceb);
 
   // Restore the register values containing object pointers from the expression
@@ -94,8 +107,6 @@ static void Generate_DebugBreakCallHelper(MacroAssembler* masm,
   __ CopyRegistersFromStackToMemory(sp, r3, pointer_regs);
 
   __ LeaveInternalFrame();
-
-  // Inlined ExitJSFrame ends here.
 
   // Finally restore all registers.
   __ RestoreRegistersFromMemory(kJSCallerSaved);
@@ -117,7 +128,7 @@ void Debug::GenerateLoadICDebugBreak(MacroAssembler* masm) {
   //  -- lr    : return address
   //  -- [sp]  : receiver
   // -----------------------------------
-  // Registers r0 and r2 contain objects that needs to be pushed on the
+  // Registers r0 and r2 contain objects that need to be pushed on the
   // expression stack of the fake JS frame.
   Generate_DebugBreakCallHelper(masm, r0.bit() | r2.bit());
 }
@@ -126,24 +137,32 @@ void Debug::GenerateLoadICDebugBreak(MacroAssembler* masm) {
 void Debug::GenerateStoreICDebugBreak(MacroAssembler* masm) {
   // Calling convention for IC store (from ic-arm.cc).
   // ----------- S t a t e -------------
-  //  -- r0    : receiver
+  //  -- r0    : value
+  //  -- r1    : receiver
   //  -- r2    : name
   //  -- lr    : return address
-  //  -- [sp]  : receiver
   // -----------------------------------
-  // Registers r0 and r2 contain objects that needs to be pushed on the
+  // Registers r0, r1, and r2 contain objects that need to be pushed on the
   // expression stack of the fake JS frame.
-  Generate_DebugBreakCallHelper(masm, r0.bit() | r2.bit());
+  Generate_DebugBreakCallHelper(masm, r0.bit() | r1.bit() | r2.bit());
 }
 
 
 void Debug::GenerateKeyedLoadICDebugBreak(MacroAssembler* masm) {
-  // Keyed load IC not implemented on ARM.
+  // ---------- S t a t e --------------
+  //  -- lr     : return address
+  //  -- sp[0]  : key
+  //  -- sp[4]  : receiver
+  Generate_DebugBreakCallHelper(masm, 0);
 }
 
 
 void Debug::GenerateKeyedStoreICDebugBreak(MacroAssembler* masm) {
-  // Keyed store IC not implemented on ARM.
+  // ---------- S t a t e --------------
+  //  -- lr     : return address
+  //  -- sp[0]  : key
+  //  -- sp[4]  : receiver
+  Generate_DebugBreakCallHelper(masm, 0);
 }
 
 
@@ -179,14 +198,11 @@ void Debug::GenerateReturnDebugBreak(MacroAssembler* masm) {
 }
 
 
-void Debug::GenerateReturnDebugBreakEntry(MacroAssembler* masm) {
-  // Generate nothing as this handling of debug break return is not done this
-  // way on ARM  - yet.
-}
-
-
 void Debug::GenerateStubNoRegistersDebugBreak(MacroAssembler* masm) {
-  // Generate nothing as CodeStub CallFunction is not used on ARM.
+  // ----------- S t a t e -------------
+  //  No registers used on entry.
+  // -----------------------------------
+  Generate_DebugBreakCallHelper(masm, 0);
 }
 
 

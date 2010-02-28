@@ -29,7 +29,9 @@
 
 #include "bootstrapper.h"
 #include "codegen-inl.h"
+#include "compiler.h"
 #include "debug.h"
+#include "liveedit.h"
 #include "oprofile-agent.h"
 #include "prettyprinter.h"
 #include "register-allocator-inl.h"
@@ -37,9 +39,28 @@
 #include "runtime.h"
 #include "scopeinfo.h"
 #include "stub-cache.h"
+#include "virtual-frame-inl.h"
 
 namespace v8 {
 namespace internal {
+
+#define __ ACCESS_MASM(masm_)
+
+#ifdef DEBUG
+
+Comment::Comment(MacroAssembler* masm, const char* msg)
+    : masm_(masm), msg_(msg) {
+  __ RecordComment(msg);
+}
+
+
+Comment::~Comment() {
+  if (msg_[0] == '[') __ RecordComment("]");
+}
+
+#endif  // DEBUG
+
+#undef __
 
 
 CodeGenerator* CodeGeneratorScope::top_ = NULL;
@@ -125,99 +146,120 @@ void CodeGenerator::DeleteFrame() {
 }
 
 
-// Generate the code. Takes a function literal, generates code for it, assemble
-// all the pieces into a Code object. This function is only to be called by
-// the compiler.cc code.
-Handle<Code> CodeGenerator::MakeCode(FunctionLiteral* flit,
-                                     Handle<Script> script,
-                                     bool is_eval) {
-#ifdef ENABLE_DISASSEMBLER
-  bool print_code = Bootstrapper::IsActive()
-      ? FLAG_print_builtin_code
-      : FLAG_print_code;
-#endif
-
+void CodeGenerator::MakeCodePrologue(CompilationInfo* info) {
 #ifdef DEBUG
   bool print_source = false;
   bool print_ast = false;
+  bool print_json_ast = false;
   const char* ftype;
 
   if (Bootstrapper::IsActive()) {
     print_source = FLAG_print_builtin_source;
     print_ast = FLAG_print_builtin_ast;
+    print_json_ast = FLAG_print_builtin_json_ast;
     ftype = "builtin";
   } else {
     print_source = FLAG_print_source;
     print_ast = FLAG_print_ast;
+    print_json_ast = FLAG_print_json_ast;
     ftype = "user-defined";
   }
 
   if (FLAG_trace_codegen || print_source || print_ast) {
     PrintF("*** Generate code for %s function: ", ftype);
-    flit->name()->ShortPrint();
+    info->function()->name()->ShortPrint();
     PrintF(" ***\n");
   }
 
   if (print_source) {
-    PrintF("--- Source from AST ---\n%s\n", PrettyPrinter().PrintProgram(flit));
+    PrintF("--- Source from AST ---\n%s\n",
+           PrettyPrinter().PrintProgram(info->function()));
   }
 
   if (print_ast) {
-    PrintF("--- AST ---\n%s\n", AstPrinter().PrintProgram(flit));
+    PrintF("--- AST ---\n%s\n",
+           AstPrinter().PrintProgram(info->function()));
+  }
+
+  if (print_json_ast) {
+    JsonAstBuilder builder;
+    PrintF("%s", builder.BuildProgram(info->function()));
   }
 #endif  // DEBUG
+}
 
-  // Generate code.
-  const int initial_buffer_size = 4 * KB;
-  CodeGenerator cgen(initial_buffer_size, script, is_eval);
-  CodeGeneratorScope scope(&cgen);
-  cgen.GenCode(flit);
-  if (cgen.HasStackOverflow()) {
-    ASSERT(!Top::has_pending_exception());
-    return Handle<Code>::null();
-  }
 
-  // Allocate and install the code.  Time the rest of this function as
-  // code creation.
-  HistogramTimerScope timer(&Counters::code_creation);
+Handle<Code> CodeGenerator::MakeCodeEpilogue(MacroAssembler* masm,
+                                             Code::Flags flags,
+                                             CompilationInfo* info) {
+  // Allocate and install the code.
   CodeDesc desc;
-  cgen.masm()->GetCode(&desc);
-  ZoneScopeInfo sinfo(flit->scope());
-  InLoopFlag in_loop = (cgen.loop_nesting() != 0) ? IN_LOOP : NOT_IN_LOOP;
-  Code::Flags flags = Code::ComputeFlags(Code::FUNCTION, in_loop);
-  Handle<Code> code = Factory::NewCode(desc,
-                                       &sinfo,
-                                       flags,
-                                       cgen.masm()->CodeObject());
-
-  // Add unresolved entries in the code to the fixup list.
-  Bootstrapper::AddFixup(*code, cgen.masm());
+  masm->GetCode(&desc);
+  ZoneScopeInfo sinfo(info->scope());
+  Handle<Code> code =
+      Factory::NewCode(desc, &sinfo, flags, masm->CodeObject());
 
 #ifdef ENABLE_DISASSEMBLER
+  bool print_code = Bootstrapper::IsActive()
+      ? FLAG_print_builtin_code
+      : FLAG_print_code;
   if (print_code) {
     // Print the source code if available.
+    Handle<Script> script = info->script();
+    FunctionLiteral* function = info->function();
     if (!script->IsUndefined() && !script->source()->IsUndefined()) {
       PrintF("--- Raw source ---\n");
       StringInputBuffer stream(String::cast(script->source()));
-      stream.Seek(flit->start_position());
-      // flit->end_position() points to the last character in the stream. We
+      stream.Seek(function->start_position());
+      // fun->end_position() points to the last character in the stream. We
       // need to compensate by adding one to calculate the length.
-      int source_len = flit->end_position() - flit->start_position() + 1;
+      int source_len =
+          function->end_position() - function->start_position() + 1;
       for (int i = 0; i < source_len; i++) {
         if (stream.has_more()) PrintF("%c", stream.GetNext());
       }
       PrintF("\n\n");
     }
     PrintF("--- Code ---\n");
-    code->Disassemble(*flit->name()->ToCString());
+    code->Disassemble(*function->name()->ToCString());
   }
 #endif  // ENABLE_DISASSEMBLER
 
   if (!code.is_null()) {
     Counters::total_compiled_code_size.Increment(code->instruction_size());
   }
-
   return code;
+}
+
+
+// Generate the code. Takes a function literal, generates code for it, assemble
+// all the pieces into a Code object. This function is only to be called by
+// the compiler.cc code.
+Handle<Code> CodeGenerator::MakeCode(CompilationInfo* info) {
+  LiveEditFunctionTracker live_edit_tracker(info->function());
+  Handle<Script> script = info->script();
+  if (!script->IsUndefined() && !script->source()->IsUndefined()) {
+    int len = String::cast(script->source())->length();
+    Counters::total_old_codegen_source_size.Increment(len);
+  }
+  MakeCodePrologue(info);
+  // Generate code.
+  const int kInitialBufferSize = 4 * KB;
+  MacroAssembler masm(NULL, kInitialBufferSize);
+  CodeGenerator cgen(&masm);
+  CodeGeneratorScope scope(&cgen);
+  live_edit_tracker.RecordFunctionScope(info->function()->scope());
+  cgen.Generate(info);
+  if (cgen.HasStackOverflow()) {
+    ASSERT(!Top::has_pending_exception());
+    return Handle<Code>::null();
+  }
+
+  InLoopFlag in_loop = (cgen.loop_nesting() != 0) ? IN_LOOP : NOT_IN_LOOP;
+  Code::Flags flags = Code::ComputeFlags(Code::FUNCTION, in_loop);
+  Handle<Code> result = MakeCodeEpilogue(cgen.masm(), flags, info);
+  live_edit_tracker.RecordFunctionCode(result);
+  return result;
 }
 
 
@@ -236,99 +278,6 @@ bool CodeGenerator::ShouldGenerateLog(Expression* type) {
 }
 
 #endif
-
-
-// Sets the function info on a function.
-// The start_position points to the first '(' character after the function name
-// in the full script source. When counting characters in the script source the
-// the first character is number 0 (not 1).
-void CodeGenerator::SetFunctionInfo(Handle<JSFunction> fun,
-                                    FunctionLiteral* lit,
-                                    bool is_toplevel,
-                                    Handle<Script> script) {
-  fun->shared()->set_length(lit->num_parameters());
-  fun->shared()->set_formal_parameter_count(lit->num_parameters());
-  fun->shared()->set_script(*script);
-  fun->shared()->set_function_token_position(lit->function_token_position());
-  fun->shared()->set_start_position(lit->start_position());
-  fun->shared()->set_end_position(lit->end_position());
-  fun->shared()->set_is_expression(lit->is_expression());
-  fun->shared()->set_is_toplevel(is_toplevel);
-  fun->shared()->set_inferred_name(*lit->inferred_name());
-  fun->shared()->SetThisPropertyAssignmentsInfo(
-      lit->has_only_this_property_assignments(),
-      lit->has_only_simple_this_property_assignments(),
-      *lit->this_property_assignments());
-}
-
-
-static Handle<Code> ComputeLazyCompile(int argc) {
-  CALL_HEAP_FUNCTION(StubCache::ComputeLazyCompile(argc), Code);
-}
-
-
-Handle<JSFunction> CodeGenerator::BuildBoilerplate(FunctionLiteral* node) {
-#ifdef DEBUG
-  // We should not try to compile the same function literal more than
-  // once.
-  node->mark_as_compiled();
-#endif
-
-  // Determine if the function can be lazily compiled. This is
-  // necessary to allow some of our builtin JS files to be lazily
-  // compiled. These builtins cannot be handled lazily by the parser,
-  // since we have to know if a function uses the special natives
-  // syntax, which is something the parser records.
-  bool allow_lazy = node->AllowsLazyCompilation();
-
-  // Generate code
-  Handle<Code> code;
-  if (FLAG_lazy && allow_lazy) {
-    code = ComputeLazyCompile(node->num_parameters());
-  } else {
-    // The bodies of function literals have not yet been visited by
-    // the AST optimizer/analyzer.
-    if (!Rewriter::Optimize(node)) {
-      return Handle<JSFunction>::null();
-    }
-
-    code = MakeCode(node, script_, false);
-
-    // Check for stack-overflow exception.
-    if (code.is_null()) {
-      SetStackOverflow();
-      return Handle<JSFunction>::null();
-    }
-
-    // Function compilation complete.
-    LOG(CodeCreateEvent(Logger::FUNCTION_TAG, *code, *node->name()));
-
-#ifdef ENABLE_OPROFILE_AGENT
-    OProfileAgent::CreateNativeCodeRegion(*node->name(),
-                                          code->instruction_start(),
-                                          code->instruction_size());
-#endif
-  }
-
-  // Create a boilerplate function.
-  Handle<JSFunction> function =
-      Factory::NewFunctionBoilerplate(node->name(),
-                                      node->materialized_literal_count(),
-                                      node->contains_array_literal(),
-                                      code);
-  CodeGenerator::SetFunctionInfo(function, node, false, script_);
-
-#ifdef ENABLE_DEBUGGER_SUPPORT
-  // Notify debugger that a new function has been added.
-  Debugger::OnNewFunction(function);
-#endif
-
-  // Set the expected number of properties for instances and return
-  // the resulting function.
-  SetExpectedNofPropertiesFromEstimate(function,
-                                       node->expected_property_count());
-  return function;
-}
 
 
 Handle<Code> CodeGenerator::ComputeCallInitialize(
@@ -387,7 +336,8 @@ void CodeGenerator::ProcessDeclarations(ZoneList<Declaration*>* declarations) {
           array->set_undefined(j++);
         }
       } else {
-        Handle<JSFunction> function = BuildBoilerplate(node->fun());
+        Handle<JSFunction> function =
+            Compiler::BuildBoilerplate(node->fun(), script(), this);
         // Check for stack-overflow exception.
         if (HasStackOverflow()) return;
         array->set(j++, *function);
@@ -411,6 +361,7 @@ CodeGenerator::InlineRuntimeLUT CodeGenerator::kInlineRuntimeLUT[] = {
   {&CodeGenerator::GenerateIsSmi, "_IsSmi"},
   {&CodeGenerator::GenerateIsNonNegativeSmi, "_IsNonNegativeSmi"},
   {&CodeGenerator::GenerateIsArray, "_IsArray"},
+  {&CodeGenerator::GenerateIsRegExp, "_IsRegExp"},
   {&CodeGenerator::GenerateIsConstructCall, "_IsConstructCall"},
   {&CodeGenerator::GenerateArgumentsLength, "_ArgumentsLength"},
   {&CodeGenerator::GenerateArgumentsAccess, "_Arguments"},
@@ -418,11 +369,21 @@ CodeGenerator::InlineRuntimeLUT CodeGenerator::kInlineRuntimeLUT[] = {
   {&CodeGenerator::GenerateValueOf, "_ValueOf"},
   {&CodeGenerator::GenerateSetValueOf, "_SetValueOf"},
   {&CodeGenerator::GenerateFastCharCodeAt, "_FastCharCodeAt"},
+  {&CodeGenerator::GenerateCharFromCode, "_CharFromCode"},
   {&CodeGenerator::GenerateObjectEquals, "_ObjectEquals"},
   {&CodeGenerator::GenerateLog, "_Log"},
   {&CodeGenerator::GenerateRandomPositiveSmi, "_RandomPositiveSmi"},
+  {&CodeGenerator::GenerateIsObject, "_IsObject"},
+  {&CodeGenerator::GenerateIsFunction, "_IsFunction"},
+  {&CodeGenerator::GenerateIsUndetectableObject, "_IsUndetectableObject"},
+  {&CodeGenerator::GenerateStringAdd, "_StringAdd"},
+  {&CodeGenerator::GenerateSubString, "_SubString"},
+  {&CodeGenerator::GenerateStringCompare, "_StringCompare"},
+  {&CodeGenerator::GenerateRegExpExec, "_RegExpExec"},
+  {&CodeGenerator::GenerateNumberToString, "_NumberToString"},
+  {&CodeGenerator::GeneratePow, "_Pow"},
   {&CodeGenerator::GenerateMathSin, "_Math_sin"},
-  {&CodeGenerator::GenerateMathCos, "_Math_cos"}
+  {&CodeGenerator::GenerateMathCos, "_Math_cos"},
 };
 
 
@@ -469,55 +430,72 @@ bool CodeGenerator::PatchInlineRuntimeEntry(Handle<String> name,
 }
 
 
-void CodeGenerator::CodeForFunctionPosition(FunctionLiteral* fun) {
-  if (FLAG_debug_info) {
-    int pos = fun->start_position();
-    if (pos != RelocInfo::kNoPosition) {
-      masm()->RecordStatementPosition(pos);
-      masm()->RecordPosition(pos);
-    }
+// Simple condition analysis.  ALWAYS_TRUE and ALWAYS_FALSE represent a
+// known result for the test expression, with no side effects.
+CodeGenerator::ConditionAnalysis CodeGenerator::AnalyzeCondition(
+    Expression* cond) {
+  if (cond == NULL) return ALWAYS_TRUE;
+
+  Literal* lit = cond->AsLiteral();
+  if (lit == NULL) return DONT_KNOW;
+
+  if (lit->IsTrue()) {
+    return ALWAYS_TRUE;
+  } else if (lit->IsFalse()) {
+    return ALWAYS_FALSE;
   }
+
+  return DONT_KNOW;
+}
+
+
+void CodeGenerator::RecordPositions(MacroAssembler* masm, int pos) {
+  if (pos != RelocInfo::kNoPosition) {
+    masm->RecordStatementPosition(pos);
+    masm->RecordPosition(pos);
+  }
+}
+
+
+void CodeGenerator::CodeForFunctionPosition(FunctionLiteral* fun) {
+  if (FLAG_debug_info) RecordPositions(masm(), fun->start_position());
 }
 
 
 void CodeGenerator::CodeForReturnPosition(FunctionLiteral* fun) {
-  if (FLAG_debug_info) {
-    int pos = fun->end_position();
-    if (pos != RelocInfo::kNoPosition) {
-      masm()->RecordStatementPosition(pos);
-      masm()->RecordPosition(pos);
-    }
-  }
+  if (FLAG_debug_info) RecordPositions(masm(), fun->end_position());
 }
 
 
-void CodeGenerator::CodeForStatementPosition(AstNode* node) {
-  if (FLAG_debug_info) {
-    int pos = node->statement_pos();
-    if (pos != RelocInfo::kNoPosition) {
-      masm()->RecordStatementPosition(pos);
-      masm()->RecordPosition(pos);
-    }
-  }
+void CodeGenerator::CodeForStatementPosition(Statement* stmt) {
+  if (FLAG_debug_info) RecordPositions(masm(), stmt->statement_pos());
 }
 
+void CodeGenerator::CodeForDoWhileConditionPosition(DoWhileStatement* stmt) {
+  if (FLAG_debug_info) RecordPositions(masm(), stmt->condition_position());
+}
 
 void CodeGenerator::CodeForSourcePosition(int pos) {
-  if (FLAG_debug_info) {
-    if (pos != RelocInfo::kNoPosition) {
-      masm()->RecordPosition(pos);
-    }
+  if (FLAG_debug_info && pos != RelocInfo::kNoPosition) {
+    masm()->RecordPosition(pos);
   }
 }
 
 
-const char* RuntimeStub::GetName() {
-  return Runtime::FunctionForId(id_)->stub_name;
-}
-
-
-void RuntimeStub::Generate(MacroAssembler* masm) {
-  masm->TailCallRuntime(ExternalReference(id_), num_arguments_);
+const char* GenericUnaryOpStub::GetName() {
+  switch (op_) {
+    case Token::SUB:
+      return overwrite_
+          ? "GenericUnaryOpStub_SUB_Overwrite"
+          : "GenericUnaryOpStub_SUB_Alloc";
+    case Token::BIT_NOT:
+      return overwrite_
+          ? "GenericUnaryOpStub_BIT_NOT_Overwrite"
+          : "GenericUnaryOpStub_BIT_NOT_Alloc";
+    default:
+      UNREACHABLE();
+      return "<unknown>";
+  }
 }
 
 
@@ -527,6 +505,33 @@ void ArgumentsAccessStub::Generate(MacroAssembler* masm) {
     case READ_ELEMENT: GenerateReadElement(masm); break;
     case NEW_OBJECT: GenerateNewObject(masm); break;
   }
+}
+
+
+int CEntryStub::MinorKey() {
+  ASSERT(result_size_ <= 2);
+#ifdef _WIN64
+  return ExitFrameModeBits::encode(mode_)
+         | IndirectResultBits::encode(result_size_ > 1);
+#else
+  return ExitFrameModeBits::encode(mode_);
+#endif
+}
+
+
+bool ApiGetterEntryStub::GetCustomCache(Code** code_out) {
+  Object* cache = info()->load_stub_cache();
+  if (cache->IsUndefined()) {
+    return false;
+  } else {
+    *code_out = Code::cast(cache);
+    return true;
+  }
+}
+
+
+void ApiGetterEntryStub::SetCustomCache(Code* value) {
+  info()->set_load_stub_cache(value);
 }
 
 

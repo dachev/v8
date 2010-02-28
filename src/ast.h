@@ -1,4 +1,4 @@
-// Copyright 2006-2008 the V8 project authors. All rights reserved.
+// Copyright 2010 the V8 project authors. All rights reserved.
 // Redistribution and use in source and binary forms, with or without
 // modification, are permitted provided that the following conditions are
 // met:
@@ -30,12 +30,11 @@
 
 #include "execution.h"
 #include "factory.h"
+#include "jsregexp.h"
+#include "jump-target.h"
 #include "runtime.h"
 #include "token.h"
 #include "variables.h"
-#include "macro-assembler.h"
-#include "jsregexp.h"
-#include "jump-target.h"
 
 namespace v8 {
 namespace internal {
@@ -64,10 +63,12 @@ namespace internal {
   V(WithEnterStatement)                         \
   V(WithExitStatement)                          \
   V(SwitchStatement)                            \
-  V(LoopStatement)                              \
+  V(DoWhileStatement)                           \
+  V(WhileStatement)                             \
+  V(ForStatement)                               \
   V(ForInStatement)                             \
-  V(TryCatch)                                   \
-  V(TryFinally)                                 \
+  V(TryCatchStatement)                          \
+  V(TryFinallyStatement)                        \
   V(DebuggerStatement)
 
 #define EXPRESSION_NODE_LIST(V)                 \
@@ -85,7 +86,6 @@ namespace internal {
   V(Throw)                                      \
   V(Property)                                   \
   V(Call)                                       \
-  V(CallEval)                                   \
   V(CallNew)                                    \
   V(CallRuntime)                                \
   V(UnaryOperation)                             \
@@ -102,6 +102,7 @@ namespace internal {
 // Forward declarations
 class TargetCollector;
 class MaterializedLiteral;
+class DefinitionInfo;
 
 #define DEF_FORWARD_DECLARATION(type) class type;
 AST_NODE_LIST(DEF_FORWARD_DECLARATION)
@@ -116,7 +117,6 @@ typedef ZoneList<Handle<Object> > ZoneObjectList;
 
 class AstNode: public ZoneObject {
  public:
-  AstNode(): statement_pos_(RelocInfo::kNoPosition) { }
   virtual ~AstNode() { }
   virtual void Accept(AstVisitor* v) = 0;
 
@@ -140,6 +140,18 @@ class AstNode: public ZoneObject {
   virtual MaterializedLiteral* AsMaterializedLiteral() { return NULL; }
   virtual ObjectLiteral* AsObjectLiteral() { return NULL; }
   virtual ArrayLiteral* AsArrayLiteral() { return NULL; }
+  virtual CompareOperation* AsCompareOperation() { return NULL; }
+};
+
+
+class Statement: public AstNode {
+ public:
+  Statement() : statement_pos_(RelocInfo::kNoPosition) {}
+
+  virtual Statement* AsStatement()  { return this; }
+  virtual ReturnStatement* AsReturnStatement() { return NULL; }
+
+  bool IsEmpty() { return AsEmptyStatement() != NULL; }
 
   void set_statement_pos(int statement_pos) { statement_pos_ = statement_pos; }
   int statement_pos() const { return statement_pos_; }
@@ -149,21 +161,47 @@ class AstNode: public ZoneObject {
 };
 
 
-class Statement: public AstNode {
- public:
-  virtual Statement* AsStatement()  { return this; }
-  virtual ReturnStatement* AsReturnStatement() { return NULL; }
-
-  bool IsEmpty() { return AsEmptyStatement() != NULL; }
-};
-
-
 class Expression: public AstNode {
  public:
+  enum Context {
+    // Not assigned a context yet, or else will not be visited during
+    // code generation.
+    kUninitialized,
+    // Evaluated for its side effects.
+    kEffect,
+    // Evaluated for its value (and side effects).
+    kValue,
+    // Evaluated for control flow (and side effects).
+    kTest,
+    // Evaluated for control flow and side effects.  Value is also
+    // needed if true.
+    kValueTest,
+    // Evaluated for control flow and side effects.  Value is also
+    // needed if false.
+    kTestValue
+  };
+
+  static const int kNoLabel = -1;
+
+  Expression() : num_(kNoLabel), def_(NULL), defined_vars_(NULL) {}
+
   virtual Expression* AsExpression()  { return this; }
 
-  virtual bool IsValidJSON() { return false; }
   virtual bool IsValidLeftHandSide() { return false; }
+
+  // Symbols that cannot be parsed as array indices are considered property
+  // names.  We do not treat symbols that can be array indexes as property
+  // names because [] for string objects is handled only by keyed ICs.
+  virtual bool IsPropertyName() { return false; }
+
+  // True if the expression does not have (evaluated) subexpressions.
+  // Function literals are leaves because their subexpressions are not
+  // evaluated.
+  virtual bool IsLeaf() { return false; }
+
+  // True if the expression has no side effects and is safe to
+  // evaluate out of order.
+  virtual bool IsTrivial() { return false; }
 
   // Mark the expression as being compiled as an expression
   // statement. This is used to transform postfix increments to
@@ -171,10 +209,27 @@ class Expression: public AstNode {
   virtual void MarkAsStatement() { /* do nothing */ }
 
   // Static type information for this expression.
-  SmiAnalysis* type() { return &type_; }
+  StaticType* type() { return &type_; }
+
+  int num() { return num_; }
+
+  // AST node numbering ordered by evaluation order.
+  void set_num(int n) { num_ = n; }
+
+  // Data flow information.
+  DefinitionInfo* var_def() { return def_; }
+  void set_var_def(DefinitionInfo* def) { def_ = def; }
+
+  ZoneList<DefinitionInfo*>* defined_vars() { return defined_vars_; }
+  void set_defined_vars(ZoneList<DefinitionInfo*>* defined_vars) {
+    defined_vars_ = defined_vars;
+  }
 
  private:
-  SmiAnalysis type_;
+  StaticType type_;
+  int num_;
+  DefinitionInfo* def_;
+  ZoneList<DefinitionInfo*>* defined_vars_;
 };
 
 
@@ -294,13 +349,65 @@ class IterationStatement: public BreakableStatement {
 };
 
 
-class LoopStatement: public IterationStatement {
+class DoWhileStatement: public IterationStatement {
  public:
-  enum Type { DO_LOOP, FOR_LOOP, WHILE_LOOP };
+  explicit DoWhileStatement(ZoneStringList* labels)
+      : IterationStatement(labels), cond_(NULL), condition_position_(-1) {
+  }
 
-  LoopStatement(ZoneStringList* labels, Type type)
+  void Initialize(Expression* cond, Statement* body) {
+    IterationStatement::Initialize(body);
+    cond_ = cond;
+  }
+
+  virtual void Accept(AstVisitor* v);
+
+  Expression* cond() const { return cond_; }
+
+  // Position where condition expression starts. We need it to make
+  // the loop's condition a breakable location.
+  int condition_position() { return condition_position_; }
+  void set_condition_position(int pos) { condition_position_ = pos; }
+
+ private:
+  Expression* cond_;
+  int condition_position_;
+};
+
+
+class WhileStatement: public IterationStatement {
+ public:
+  explicit WhileStatement(ZoneStringList* labels)
       : IterationStatement(labels),
-        type_(type),
+        cond_(NULL),
+        may_have_function_literal_(true) {
+  }
+
+  void Initialize(Expression* cond, Statement* body) {
+    IterationStatement::Initialize(body);
+    cond_ = cond;
+  }
+
+  virtual void Accept(AstVisitor* v);
+
+  Expression* cond() const { return cond_; }
+  bool may_have_function_literal() const {
+    return may_have_function_literal_;
+  }
+
+ private:
+  Expression* cond_;
+  // True if there is a function literal subexpression in the condition.
+  bool may_have_function_literal_;
+
+  friend class AstOptimizer;
+};
+
+
+class ForStatement: public IterationStatement {
+ public:
+  explicit ForStatement(ZoneStringList* labels)
+      : IterationStatement(labels),
         init_(NULL),
         cond_(NULL),
         next_(NULL),
@@ -311,8 +418,6 @@ class LoopStatement: public IterationStatement {
                   Expression* cond,
                   Statement* next,
                   Statement* body) {
-    ASSERT(init == NULL || type_ == FOR_LOOP);
-    ASSERT(next == NULL || type_ == FOR_LOOP);
     IterationStatement::Initialize(body);
     init_ = init;
     cond_ = cond;
@@ -321,7 +426,6 @@ class LoopStatement: public IterationStatement {
 
   virtual void Accept(AstVisitor* v);
 
-  Type type() const  { return type_; }
   Statement* init() const  { return init_; }
   Expression* cond() const  { return cond_; }
   Statement* next() const  { return next_; }
@@ -329,12 +433,7 @@ class LoopStatement: public IterationStatement {
     return may_have_function_literal_;
   }
 
-#ifdef DEBUG
-  const char* OperatorString() const;
-#endif
-
  private:
-  Type type_;
   Statement* init_;
   Expression* cond_;
   Statement* next_;
@@ -569,29 +668,30 @@ class TryStatement: public Statement {
 };
 
 
-class TryCatch: public TryStatement {
+class TryCatchStatement: public TryStatement {
  public:
-  TryCatch(Block* try_block, Expression* catch_var, Block* catch_block)
+  TryCatchStatement(Block* try_block,
+                    VariableProxy* catch_var,
+                    Block* catch_block)
       : TryStatement(try_block),
         catch_var_(catch_var),
         catch_block_(catch_block) {
-    ASSERT(catch_var->AsVariableProxy() != NULL);
   }
 
   virtual void Accept(AstVisitor* v);
 
-  Expression* catch_var() const  { return catch_var_; }
+  VariableProxy* catch_var() const  { return catch_var_; }
   Block* catch_block() const  { return catch_block_; }
 
  private:
-  Expression* catch_var_;
+  VariableProxy* catch_var_;
   Block* catch_block_;
 };
 
 
-class TryFinally: public TryStatement {
+class TryFinallyStatement: public TryStatement {
  public:
-  TryFinally(Block* try_block, Block* finally_block)
+  TryFinallyStatement(Block* try_block, Block* finally_block)
       : TryStatement(try_block),
         finally_block_(finally_block) { }
 
@@ -633,7 +733,16 @@ class Literal: public Expression {
     return handle_.is_identical_to(other->handle_);
   }
 
-  virtual bool IsValidJSON() { return true; }
+  virtual bool IsPropertyName() {
+    if (handle_->IsSymbol()) {
+      uint32_t ignored;
+      return !String::cast(*handle_)->AsArrayIndex(&ignored);
+    }
+    return false;
+  }
+
+  virtual bool IsLeaf() { return true; }
+  virtual bool IsTrivial() { return true; }
 
   // Identity testers.
   bool IsNull() const { return handle_.is_identical_to(Factory::null_value()); }
@@ -662,8 +771,6 @@ class MaterializedLiteral: public Expression {
   // A materialized literal is simple if the values consist of only
   // constants and simple object and array literals.
   bool is_simple() const { return is_simple_; }
-
-  virtual bool IsValidJSON() { return true; }
 
   int depth() const { return depth_; }
 
@@ -699,6 +806,8 @@ class ObjectLiteral: public MaterializedLiteral {
     Expression* value() { return value_; }
     Kind kind() { return kind_; }
 
+    bool IsCompileTimeValue();
+
    private:
     Literal* key_;
     Expression* value_;
@@ -716,7 +825,8 @@ class ObjectLiteral: public MaterializedLiteral {
 
   virtual ObjectLiteral* AsObjectLiteral() { return this; }
   virtual void Accept(AstVisitor* v);
-  virtual bool IsValidJSON();
+
+  virtual bool IsLeaf() { return properties()->is_empty(); }
 
   Handle<FixedArray> constant_properties() const {
     return constant_properties_;
@@ -741,6 +851,8 @@ class RegExpLiteral: public MaterializedLiteral {
 
   virtual void Accept(AstVisitor* v);
 
+  virtual bool IsLeaf() { return true; }
+
   Handle<String> pattern() const { return pattern_; }
   Handle<String> flags() const { return flags_; }
 
@@ -753,24 +865,25 @@ class RegExpLiteral: public MaterializedLiteral {
 // for minimizing the work when constructing it at runtime.
 class ArrayLiteral: public MaterializedLiteral {
  public:
-  ArrayLiteral(Handle<FixedArray> literals,
+  ArrayLiteral(Handle<FixedArray> constant_elements,
                ZoneList<Expression*>* values,
                int literal_index,
                bool is_simple,
                int depth)
       : MaterializedLiteral(literal_index, is_simple, depth),
-        literals_(literals),
+        constant_elements_(constant_elements),
         values_(values) {}
 
   virtual void Accept(AstVisitor* v);
   virtual ArrayLiteral* AsArrayLiteral() { return this; }
-  virtual bool IsValidJSON();
 
-  Handle<FixedArray> literals() const { return literals_; }
+  virtual bool IsLeaf() { return values()->is_empty(); }
+
+  Handle<FixedArray> constant_elements() const { return constant_elements_; }
   ZoneList<Expression*>* values() const { return values_; }
 
  private:
-  Handle<FixedArray> literals_;
+  Handle<FixedArray> constant_elements_;
   ZoneList<Expression*>* values_;
 };
 
@@ -811,6 +924,11 @@ class VariableProxy: public Expression {
 
   virtual bool IsValidLeftHandSide() {
     return var_ == NULL ? true : var_->IsValidLeftHandSide();
+  }
+
+  virtual bool IsLeaf() {
+    ASSERT(var_ != NULL);  // Variable must be resolved.
+    return var()->is_global() || var()->rewrite()->IsLeaf();
   }
 
   bool IsVariable(Handle<String> n) {
@@ -885,11 +1003,7 @@ class Slot: public Expression {
     // variable name in the context object on the heap,
     // with lookup starting at the current context. index()
     // is invalid.
-    LOOKUP,
-
-    // A property in the global object. var()->name() is
-    // the property name.
-    GLOBAL
+    LOOKUP
   };
 
   Slot(Variable* var, Type type, int index)
@@ -901,6 +1015,8 @@ class Slot: public Expression {
 
   // Type testing & conversion
   virtual Slot* AsSlot() { return this; }
+
+  virtual bool IsLeaf() { return true; }
 
   // Accessors
   Variable* var() const { return var_; }
@@ -954,12 +1070,8 @@ class Property: public Expression {
 
 class Call: public Expression {
  public:
-  Call(Expression* expression,
-       ZoneList<Expression*>* arguments,
-       int pos)
-      : expression_(expression),
-        arguments_(arguments),
-        pos_(pos) { }
+  Call(Expression* expression, ZoneList<Expression*>* arguments, int pos)
+      : expression_(expression), arguments_(arguments), pos_(pos) { }
 
   virtual void Accept(AstVisitor* v);
 
@@ -981,30 +1093,21 @@ class Call: public Expression {
 };
 
 
-class CallNew: public Call {
+class CallNew: public Expression {
  public:
   CallNew(Expression* expression, ZoneList<Expression*>* arguments, int pos)
-      : Call(expression, arguments, pos) { }
-
-  virtual void Accept(AstVisitor* v);
-};
-
-
-// The CallEval class represents a call of the form 'eval(...)' where eval
-// cannot be seen to be overwritten at compile time. It is potentially a
-// direct (i.e. not aliased) eval call. The real nature of the call is
-// determined at runtime.
-class CallEval: public Call {
- public:
-  CallEval(Expression* expression, ZoneList<Expression*>* arguments, int pos)
-      : Call(expression, arguments, pos) { }
+      : expression_(expression), arguments_(arguments), pos_(pos) { }
 
   virtual void Accept(AstVisitor* v);
 
-  static CallEval* sentinel() { return &sentinel_; }
+  Expression* expression() const { return expression_; }
+  ZoneList<Expression*>* arguments() const { return arguments_; }
+  int position() { return pos_; }
 
  private:
-  static CallEval sentinel_;
+  Expression* expression_;
+  ZoneList<Expression*>* arguments_;
+  int pos_;
 };
 
 
@@ -1024,6 +1127,7 @@ class CallRuntime: public Expression {
   Handle<String> name() const { return name_; }
   Runtime::Function* function() const { return function_; }
   ZoneList<Expression*>* arguments() const { return arguments_; }
+  bool is_jsruntime() const { return function_ == NULL; }
 
  private:
   Handle<String> name_;
@@ -1114,6 +1218,9 @@ class CountOperation: public Expression {
   bool is_prefix() const { return is_prefix_; }
   bool is_postfix() const { return !is_prefix_; }
   Token::Value op() const { return op_; }
+  Token::Value binary_op() {
+    return op_ == Token::INC ? Token::ADD : Token::SUB;
+  }
   Expression* expression() const { return expression_; }
 
   virtual void MarkAsStatement() { is_prefix_ = true; }
@@ -1128,7 +1235,7 @@ class CountOperation: public Expression {
 class CompareOperation: public Expression {
  public:
   CompareOperation(Token::Value op, Expression* left, Expression* right)
-      : op_(op), left_(left), right_(right) {
+      : op_(op), left_(left), right_(right), is_for_loop_condition_(false) {
     ASSERT(Token::IsCompareOp(op));
   }
 
@@ -1138,10 +1245,18 @@ class CompareOperation: public Expression {
   Expression* left() const { return left_; }
   Expression* right() const { return right_; }
 
+  // Accessors for flag whether this compare operation is hanging of a for loop.
+  bool is_for_loop_condition() const { return is_for_loop_condition_; }
+  void set_is_for_loop_condition() { is_for_loop_condition_ = true; }
+
+  // Type testing & conversion
+  virtual CompareOperation* AsCompareOperation() { return this; }
+
  private:
   Token::Value op_;
   Expression* left_;
   Expression* right_;
+  bool is_for_loop_condition_;
 };
 
 
@@ -1184,6 +1299,8 @@ class Assignment: public Expression {
   Expression* target() const { return target_; }
   Expression* value() const { return value_; }
   int position() { return pos_; }
+  // This check relies on the definition order of token in token.h.
+  bool is_compound() const { return op() > Token::ASSIGN; }
 
   // An initialization block is a series of statments of the form
   // x.y.z.a = ...; x.y.z.b = ...; etc. The parser marks the beginning and
@@ -1225,9 +1342,7 @@ class FunctionLiteral: public Expression {
                   Scope* scope,
                   ZoneList<Statement*>* body,
                   int materialized_literal_count,
-                  bool contains_array_literal,
                   int expected_property_count,
-                  bool has_only_this_property_assignments,
                   bool has_only_simple_this_property_assignments,
                   Handle<FixedArray> this_property_assignments,
                   int num_parameters,
@@ -1238,9 +1353,7 @@ class FunctionLiteral: public Expression {
         scope_(scope),
         body_(body),
         materialized_literal_count_(materialized_literal_count),
-        contains_array_literal_(contains_array_literal),
         expected_property_count_(expected_property_count),
-        has_only_this_property_assignments_(has_only_this_property_assignments),
         has_only_simple_this_property_assignments_(
             has_only_simple_this_property_assignments),
         this_property_assignments_(this_property_assignments),
@@ -1248,9 +1361,9 @@ class FunctionLiteral: public Expression {
         start_position_(start_position),
         end_position_(end_position),
         is_expression_(is_expression),
-        loop_nesting_(0),
         function_token_position_(RelocInfo::kNoPosition),
-        inferred_name_(Heap::empty_string()) {
+        inferred_name_(Heap::empty_string()),
+        try_full_codegen_(false) {
 #ifdef DEBUG
     already_compiled_ = false;
 #endif
@@ -1260,6 +1373,8 @@ class FunctionLiteral: public Expression {
 
   // Type testing & conversion
   virtual FunctionLiteral* AsFunctionLiteral()  { return this; }
+
+  virtual bool IsLeaf() { return true; }
 
   Handle<String> name() const  { return name_; }
   Scope* scope() const  { return scope_; }
@@ -1271,11 +1386,7 @@ class FunctionLiteral: public Expression {
   bool is_expression() const { return is_expression_; }
 
   int materialized_literal_count() { return materialized_literal_count_; }
-  bool contains_array_literal() { return contains_array_literal_; }
   int expected_property_count() { return expected_property_count_; }
-  bool has_only_this_property_assignments() {
-      return has_only_this_property_assignments_;
-  }
   bool has_only_simple_this_property_assignments() {
       return has_only_simple_this_property_assignments_;
   }
@@ -1286,13 +1397,13 @@ class FunctionLiteral: public Expression {
 
   bool AllowsLazyCompilation();
 
-  bool loop_nesting() const { return loop_nesting_; }
-  void set_loop_nesting(int nesting) { loop_nesting_ = nesting; }
-
   Handle<String> inferred_name() const  { return inferred_name_; }
   void set_inferred_name(Handle<String> inferred_name) {
     inferred_name_ = inferred_name;
   }
+
+  bool try_full_codegen() { return try_full_codegen_; }
+  void set_try_full_codegen(bool flag) { try_full_codegen_ = flag; }
 
 #ifdef DEBUG
   void mark_as_compiled() {
@@ -1306,18 +1417,16 @@ class FunctionLiteral: public Expression {
   Scope* scope_;
   ZoneList<Statement*>* body_;
   int materialized_literal_count_;
-  bool contains_array_literal_;
   int expected_property_count_;
-  bool has_only_this_property_assignments_;
   bool has_only_simple_this_property_assignments_;
   Handle<FixedArray> this_property_assignments_;
   int num_parameters_;
   int start_position_;
   int end_position_;
   bool is_expression_;
-  int loop_nesting_;
   int function_token_position_;
   Handle<String> inferred_name_;
+  bool try_full_codegen_;
 #ifdef DEBUG
   bool already_compiled_;
 #endif
@@ -1333,6 +1442,8 @@ class FunctionBoilerplateLiteral: public Expression {
 
   Handle<JSFunction> boilerplate() const { return boilerplate_; }
 
+  virtual bool IsLeaf() { return true; }
+
   virtual void Accept(AstVisitor* v);
 
  private:
@@ -1343,6 +1454,7 @@ class FunctionBoilerplateLiteral: public Expression {
 class ThisFunction: public Expression {
  public:
   virtual void Accept(AstVisitor* v);
+  virtual bool IsLeaf() { return true; }
 };
 
 
@@ -1463,6 +1575,7 @@ class CharacterSet BASE_EMBEDDED {
     standard_set_type_ = special_set_type;
   }
   bool is_standard() { return standard_set_type_ != 0; }
+  void Canonicalize();
  private:
   ZoneList<CharacterRange>* ranges_;
   // If non-zero, the value represents a standard set (e.g., all whitespace
@@ -1556,12 +1669,13 @@ class RegExpText: public RegExpTree {
 
 class RegExpQuantifier: public RegExpTree {
  public:
-  RegExpQuantifier(int min, int max, bool is_greedy, RegExpTree* body)
-      : min_(min),
+  enum Type { GREEDY, NON_GREEDY, POSSESSIVE };
+  RegExpQuantifier(int min, int max, Type type, RegExpTree* body)
+      : body_(body),
+        min_(min),
         max_(max),
-        is_greedy_(is_greedy),
-        body_(body),
-        min_match_(min * body->min_match()) {
+        min_match_(min * body->min_match()),
+        type_(type) {
     if (max > 0 && body->max_match() > kInfinity / max) {
       max_match_ = kInfinity;
     } else {
@@ -1585,15 +1699,17 @@ class RegExpQuantifier: public RegExpTree {
   virtual int max_match() { return max_match_; }
   int min() { return min_; }
   int max() { return max_; }
-  bool is_greedy() { return is_greedy_; }
+  bool is_possessive() { return type_ == POSSESSIVE; }
+  bool is_non_greedy() { return type_ == NON_GREEDY; }
+  bool is_greedy() { return type_ == GREEDY; }
   RegExpTree* body() { return body_; }
  private:
+  RegExpTree* body_;
   int min_;
   int max_;
-  bool is_greedy_;
-  RegExpTree* body_;
   int min_match_;
   int max_match_;
+  Type type_;
 };
 
 
@@ -1703,6 +1819,7 @@ class AstVisitor BASE_EMBEDDED {
   void Visit(AstNode* node) { node->Accept(this); }
 
   // Iteration
+  virtual void VisitDeclarations(ZoneList<Declaration*>* declarations);
   virtual void VisitStatements(ZoneList<Statement*>* statements);
   virtual void VisitExpressions(ZoneList<Expression*>* expressions);
 

@@ -30,30 +30,12 @@
 #include "codegen-inl.h"
 #include "register-allocator-inl.h"
 #include "scopes.h"
+#include "virtual-frame-inl.h"
 
 namespace v8 {
 namespace internal {
 
-// -------------------------------------------------------------------------
-// VirtualFrame implementation.
-
 #define __ ACCESS_MASM(masm())
-
-
-// On entry to a function, the virtual frame already contains the
-// receiver and the parameters.  All initial frame elements are in
-// memory.
-VirtualFrame::VirtualFrame()
-    : elements_(parameter_count() + local_count() + kPreallocatedElements),
-      stack_pointer_(parameter_count()) {  // 0-based index of TOS.
-  for (int i = 0; i <= stack_pointer_; i++) {
-    elements_.Add(FrameElement::MemoryElement());
-  }
-  for (int i = 0; i < RegisterAllocator::kNumRegisters; i++) {
-    register_locations_[i] = kIllegalIndex;
-  }
-}
-
 
 void VirtualFrame::SyncElementBelowStackPointer(int index) {
   UNREACHABLE();
@@ -127,6 +109,10 @@ void VirtualFrame::Enter() {
 
 void VirtualFrame::Exit() {
   Comment cmnt(masm(), "[ Exit JS frame");
+  // Record the location of the JS exit code for patching when setting
+  // break point.
+  __ RecordJSReturn();
+
   // Drop the execution stack down to the frame pointer and restore the caller
   // frame pointer and return address.
   __ mov(sp, fp);
@@ -139,13 +125,41 @@ void VirtualFrame::AllocateStackSlots() {
   if (count > 0) {
     Comment cmnt(masm(), "[ Allocate space for locals");
     Adjust(count);
-      // Initialize stack slots with 'undefined' value.
+    // Initialize stack slots with 'undefined' value.
     __ LoadRoot(ip, Heap::kUndefinedValueRootIndex);
-    for (int i = 0; i < count; i++) {
+    __ LoadRoot(r2, Heap::kStackLimitRootIndex);
+    if (count < kLocalVarBound) {
+      // For less locals the unrolled loop is more compact.
+      for (int i = 0; i < count; i++) {
+        __ push(ip);
+      }
+    } else {
+      // For more locals a loop in generated code is more compact.
+      Label alloc_locals_loop;
+      __ mov(r1, Operand(count));
+      __ bind(&alloc_locals_loop);
       __ push(ip);
+      __ sub(r1, r1, Operand(1), SetCC);
+      __ b(ne, &alloc_locals_loop);
     }
+  } else {
+    __ LoadRoot(r2, Heap::kStackLimitRootIndex);
   }
+  // Check the stack for overflow or a break request.
+  // Put the lr setup instruction in the delay slot.  The kInstrSize is added
+  // to the implicit 8 byte offset that always applies to operations with pc
+  // and gives a return address 12 bytes down.
+  masm()->add(lr, pc, Operand(Assembler::kInstrSize));
+  masm()->cmp(sp, Operand(r2));
+  StackCheckStub stub;
+  // Call the stub if lower.
+  masm()->mov(pc,
+              Operand(reinterpret_cast<intptr_t>(stub.GetCode().location()),
+                      RelocInfo::CODE_TARGET),
+              LeaveCC,
+              lo);
 }
+
 
 
 void VirtualFrame::SaveContextRegister() {
@@ -187,143 +201,59 @@ void VirtualFrame::PushTryHandler(HandlerType type) {
 }
 
 
-void VirtualFrame::RawCallStub(CodeStub* stub) {
-  ASSERT(cgen()->HasValidEntryRegisters());
-  __ CallStub(stub);
-}
-
-
-void VirtualFrame::CallStub(CodeStub* stub, Result* arg) {
-  PrepareForCall(0, 0);
-  arg->Unuse();
-  RawCallStub(stub);
-}
-
-
-void VirtualFrame::CallStub(CodeStub* stub, Result* arg0, Result* arg1) {
-  PrepareForCall(0, 0);
-  arg0->Unuse();
-  arg1->Unuse();
-  RawCallStub(stub);
-}
-
-
 void VirtualFrame::CallRuntime(Runtime::Function* f, int arg_count) {
-  PrepareForCall(arg_count, arg_count);
+  Forget(arg_count);
   ASSERT(cgen()->HasValidEntryRegisters());
   __ CallRuntime(f, arg_count);
 }
 
 
 void VirtualFrame::CallRuntime(Runtime::FunctionId id, int arg_count) {
-  PrepareForCall(arg_count, arg_count);
+  Forget(arg_count);
   ASSERT(cgen()->HasValidEntryRegisters());
   __ CallRuntime(id, arg_count);
 }
 
 
+#ifdef ENABLE_DEBUGGER_SUPPORT
+void VirtualFrame::DebugBreak() {
+  ASSERT(cgen()->HasValidEntryRegisters());
+  __ DebugBreak();
+}
+#endif
+
+
 void VirtualFrame::InvokeBuiltin(Builtins::JavaScript id,
                                  InvokeJSFlags flags,
-                                 Result* arg_count_register,
                                  int arg_count) {
-  ASSERT(arg_count_register->reg().is(r0));
-  PrepareForCall(arg_count, arg_count);
-  arg_count_register->Unuse();
+  Forget(arg_count);
   __ InvokeBuiltin(id, flags);
 }
 
 
-void VirtualFrame::RawCallCodeObject(Handle<Code> code,
-                                       RelocInfo::Mode rmode) {
-  ASSERT(cgen()->HasValidEntryRegisters());
-  __ Call(code, rmode);
-}
-
-
 void VirtualFrame::CallCodeObject(Handle<Code> code,
                                   RelocInfo::Mode rmode,
                                   int dropped_args) {
-  int spilled_args = 0;
   switch (code->kind()) {
     case Code::CALL_IC:
-      spilled_args = dropped_args + 1;
-      break;
     case Code::FUNCTION:
-      spilled_args = dropped_args + 1;
       break;
     case Code::KEYED_LOAD_IC:
-      ASSERT(dropped_args == 0);
-      spilled_args = 2;
-      break;
-    default:
-      // The other types of code objects are called with values
-      // in specific registers, and are handled in functions with
-      // a different signature.
-      UNREACHABLE();
-      break;
-  }
-  PrepareForCall(spilled_args, dropped_args);
-  RawCallCodeObject(code, rmode);
-}
-
-
-void VirtualFrame::CallCodeObject(Handle<Code> code,
-                                  RelocInfo::Mode rmode,
-                                  Result* arg,
-                                  int dropped_args) {
-  int spilled_args = 0;
-  switch (code->kind()) {
     case Code::LOAD_IC:
-      ASSERT(arg->reg().is(r2));
-      ASSERT(dropped_args == 0);
-      spilled_args = 1;
-      break;
     case Code::KEYED_STORE_IC:
-      ASSERT(arg->reg().is(r0));
-      ASSERT(dropped_args == 0);
-      spilled_args = 2;
-      break;
-    default:
-      // No other types of code objects are called with values
-      // in exactly one register.
-      UNREACHABLE();
-      break;
-  }
-  PrepareForCall(spilled_args, dropped_args);
-  arg->Unuse();
-  RawCallCodeObject(code, rmode);
-}
-
-
-void VirtualFrame::CallCodeObject(Handle<Code> code,
-                                  RelocInfo::Mode rmode,
-                                  Result* arg0,
-                                  Result* arg1,
-                                  int dropped_args) {
-  int spilled_args = 1;
-  switch (code->kind()) {
     case Code::STORE_IC:
-      ASSERT(arg0->reg().is(r0));
-      ASSERT(arg1->reg().is(r2));
       ASSERT(dropped_args == 0);
-      spilled_args = 1;
       break;
     case Code::BUILTIN:
       ASSERT(*code == Builtins::builtin(Builtins::JSConstructCall));
-      ASSERT(arg0->reg().is(r0));
-      ASSERT(arg1->reg().is(r1));
-      spilled_args = dropped_args + 1;
       break;
     default:
-      // No other types of code objects are called with values
-      // in exactly two registers.
       UNREACHABLE();
       break;
   }
-  PrepareForCall(spilled_args, dropped_args);
-  arg0->Unuse();
-  arg1->Unuse();
-  RawCallCodeObject(code, rmode);
+  Forget(dropped_args);
+  ASSERT(cgen()->HasValidEntryRegisters());
+  __ Call(code, rmode);
 }
 
 
@@ -365,9 +295,16 @@ void VirtualFrame::EmitPop(Register reg) {
 
 void VirtualFrame::EmitPush(Register reg) {
   ASSERT(stack_pointer_ == element_count() - 1);
-  elements_.Add(FrameElement::MemoryElement());
+  elements_.Add(FrameElement::MemoryElement(NumberInfo::kUnknown));
   stack_pointer_++;
   __ push(reg);
+}
+
+
+void VirtualFrame::EmitPushMultiple(int count, int src_regs) {
+  ASSERT(stack_pointer_ == element_count() - 1);
+  Adjust(count);
+  __ stm(db_w, sp, src_regs);
 }
 
 

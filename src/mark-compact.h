@@ -92,7 +92,15 @@ class MarkCompactCollector: public AllStatic {
   static bool HasCompacted() { return compacting_collection_; }
 
   // True after the Prepare phase if the compaction is taking place.
-  static bool IsCompacting() { return compacting_collection_; }
+  static bool IsCompacting() {
+#ifdef DEBUG
+    // For the purposes of asserts we don't want this to keep returning true
+    // after the collection is completed.
+    return state_ != IDLE && compacting_collection_;
+#else
+    return compacting_collection_;
+#endif
+  }
 
   // The count of the number of objects left marked at the end of the last
   // completed full GC (expected to be zero).
@@ -106,6 +114,9 @@ class MarkCompactCollector: public AllStatic {
   // Checks whether performing mark-compact collection.
   static bool in_use() { return state_ > PREPARE_GC; }
 #endif
+
+  // Determine type of object and emit deletion log event.
+  static void ReportDeleteIfNeeded(HeapObject* obj);
 
  private:
 #ifdef DEBUG
@@ -129,6 +140,9 @@ class MarkCompactCollector: public AllStatic {
 
   // Global flag indicating whether spaces were compacted on the last GC.
   static bool compacting_collection_;
+
+  // Global flag indicating whether spaces will be compacted on the next GC.
+  static bool compact_on_next_gc_;
 
   // The number of objects left marked at the end of the last completed full
   // GC (expected to be zero).

@@ -315,7 +315,11 @@ Object* Accessors::ScriptGetLineEnds(Object* object, void*) {
   HandleScope scope;
   Handle<Script> script(Script::cast(JSValue::cast(object)->value()));
   InitScriptLineEnds(script);
-  return script->line_ends();
+  ASSERT(script->line_ends()->IsFixedArray());
+  Handle<FixedArray> line_ends(FixedArray::cast(script->line_ends()));
+  Handle<FixedArray> copy = Factory::CopyFixedArray(line_ends);
+  Handle<JSArray> js_array = Factory::NewJSArrayWithElements(copy);
+  return *js_array;
 }
 
 
@@ -345,29 +349,38 @@ const AccessorDescriptor Accessors::ScriptContextData = {
 
 
 //
-// Accessors::ScriptGetEvalFromFunction
+// Accessors::ScriptGetEvalFromScript
 //
 
 
-Object* Accessors::ScriptGetEvalFromFunction(Object* object, void*) {
+Object* Accessors::ScriptGetEvalFromScript(Object* object, void*) {
   Object* script = JSValue::cast(object)->value();
-  return Script::cast(script)->eval_from_function();
+  if (!Script::cast(script)->eval_from_shared()->IsUndefined()) {
+    Handle<SharedFunctionInfo> eval_from_shared(
+        SharedFunctionInfo::cast(Script::cast(script)->eval_from_shared()));
+
+    if (eval_from_shared->script()->IsScript()) {
+      Handle<Script> eval_from_script(Script::cast(eval_from_shared->script()));
+      return *GetScriptWrapper(eval_from_script);
+    }
+  }
+  return Heap::undefined_value();
 }
 
 
-const AccessorDescriptor Accessors::ScriptEvalFromFunction = {
-  ScriptGetEvalFromFunction,
+const AccessorDescriptor Accessors::ScriptEvalFromScript = {
+  ScriptGetEvalFromScript,
   IllegalSetter,
   0
 };
 
 
 //
-// Accessors::ScriptGetEvalFromPosition
+// Accessors::ScriptGetEvalFromScriptPosition
 //
 
 
-Object* Accessors::ScriptGetEvalFromPosition(Object* object, void*) {
+Object* Accessors::ScriptGetEvalFromScriptPosition(Object* object, void*) {
   HandleScope scope;
   Handle<Script> script(Script::cast(JSValue::cast(object)->value()));
 
@@ -379,14 +392,42 @@ Object* Accessors::ScriptGetEvalFromPosition(Object* object, void*) {
 
   // Get the function from where eval was called and find the source position
   // from the instruction offset.
-  Handle<Code> code(JSFunction::cast(script->eval_from_function())->code());
+  Handle<Code> code(SharedFunctionInfo::cast(
+      script->eval_from_shared())->code());
   return Smi::FromInt(code->SourcePosition(code->instruction_start() +
                       script->eval_from_instructions_offset()->value()));
 }
 
 
-const AccessorDescriptor Accessors::ScriptEvalFromPosition = {
-  ScriptGetEvalFromPosition,
+const AccessorDescriptor Accessors::ScriptEvalFromScriptPosition = {
+  ScriptGetEvalFromScriptPosition,
+  IllegalSetter,
+  0
+};
+
+
+//
+// Accessors::ScriptGetEvalFromFunctionName
+//
+
+
+Object* Accessors::ScriptGetEvalFromFunctionName(Object* object, void*) {
+  Object* script = JSValue::cast(object)->value();
+  Handle<SharedFunctionInfo> shared(SharedFunctionInfo::cast(
+      Script::cast(script)->eval_from_shared()));
+
+
+  // Find the name of the function calling eval.
+  if (!shared->name()->IsUndefined()) {
+    return shared->name();
+  } else {
+    return shared->inferred_name();
+  }
+}
+
+
+const AccessorDescriptor Accessors::ScriptEvalFromFunctionName = {
+  ScriptGetEvalFromFunctionName,
   IllegalSetter,
   0
 };
@@ -452,11 +493,11 @@ Object* Accessors::FunctionGetLength(Object* object, void*) {
     // If the function isn't compiled yet, the length is not computed
     // correctly yet. Compile it now and return the right length.
     HandleScope scope;
-    Handle<JSFunction> function_handle(function);
-    if (!CompileLazy(function_handle, KEEP_EXCEPTION)) {
+    Handle<SharedFunctionInfo> shared(function->shared());
+    if (!CompileLazyShared(shared, KEEP_EXCEPTION)) {
       return Failure::Exception();
     }
-    return Smi::FromInt(function_handle->shared()->length());
+    return Smi::FromInt(shared->length());
   } else {
     return Smi::FromInt(function->shared()->length());
   }
@@ -606,42 +647,9 @@ Object* Accessors::ObjectGetPrototype(Object* receiver, void*) {
 Object* Accessors::ObjectSetPrototype(JSObject* receiver,
                                       Object* value,
                                       void*) {
-  // Before we can set the prototype we need to be sure
-  // prototype cycles are prevented.
-  // It is sufficient to validate that the receiver is not in the new prototype
-  // chain.
-
-  // Silently ignore the change if value is not a JSObject or null.
-  // SpiderMonkey behaves this way.
-  if (!value->IsJSObject() && !value->IsNull()) return value;
-
-  for (Object* pt = value; pt != Heap::null_value(); pt = pt->GetPrototype()) {
-    if (JSObject::cast(pt) == receiver) {
-      // Cycle detected.
-      HandleScope scope;
-      return Top::Throw(*Factory::NewError("cyclic_proto",
-                                           HandleVector<Object>(NULL, 0)));
-    }
-  }
-
-  // Find the first object in the chain whose prototype object is not
-  // hidden and set the new prototype on that object.
-  JSObject* current = receiver;
-  Object* current_proto = receiver->GetPrototype();
-  while (current_proto->IsJSObject() &&
-         JSObject::cast(current_proto)->map()->is_hidden_prototype()) {
-    current = JSObject::cast(current_proto);
-    current_proto = current_proto->GetPrototype();
-  }
-
-  // Set the new prototype of the object.
-  Object* new_map = current->map()->CopyDropTransitions();
-  if (new_map->IsFailure()) return new_map;
-  Map::cast(new_map)->set_prototype(value);
-  current->set_map(Map::cast(new_map));
-
+  const bool skip_hidden_prototypes = true;
   // To be consistent with other Set functions, return the value.
-  return value;
+  return receiver->SetPrototype(value, skip_hidden_prototypes);
 }
 
 

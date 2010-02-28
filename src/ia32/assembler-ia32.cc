@@ -49,6 +49,7 @@ namespace internal {
 // Safe default is no features.
 uint64_t CpuFeatures::supported_ = 0;
 uint64_t CpuFeatures::enabled_ = 0;
+uint64_t CpuFeatures::found_by_runtime_probing_ = 0;
 
 
 // The Probe method needs executable memory, so it uses Heap::CreateCode.
@@ -56,7 +57,10 @@ uint64_t CpuFeatures::enabled_ = 0;
 void CpuFeatures::Probe() {
   ASSERT(Heap::HasBeenSetup());
   ASSERT(supported_ == 0);
-  if (Serializer::enabled()) return;  // No features if we might serialize.
+  if (Serializer::enabled()) {
+    supported_ |= OS::CpuFeaturesImpliedByPlatform();
+    return;  // No features if we might serialize.
+  }
 
   Assembler assm(NULL, 0);
   Label cpuid, done;
@@ -124,6 +128,10 @@ void CpuFeatures::Probe() {
   typedef uint64_t (*F0)();
   F0 probe = FUNCTION_CAST<F0>(Code::cast(code)->entry());
   supported_ = probe();
+  found_by_runtime_probing_ = supported_;
+  uint64_t os_guarantees = OS::CpuFeaturesImpliedByPlatform();
+  supported_ |= os_guarantees;
+  found_by_runtime_probing_ &= ~os_guarantees;
 }
 
 
@@ -157,6 +165,9 @@ void RelocInfo::PatchCode(byte* instructions, int instruction_count) {
   for (int i = 0; i < instruction_count; i++) {
     *(pc_ + i) = *(instructions + i);
   }
+
+  // Indicate that code has changed.
+  CPU::FlushICache(pc_, instruction_count);
 }
 
 
@@ -164,11 +175,24 @@ void RelocInfo::PatchCode(byte* instructions, int instruction_count) {
 // Additional guard int3 instructions can be added if required.
 void RelocInfo::PatchCodeWithCall(Address target, int guard_bytes) {
   // Call instruction takes up 5 bytes and int3 takes up one byte.
-  int code_size = 5 + guard_bytes;
+  static const int kCallCodeSize = 5;
+  int code_size = kCallCodeSize + guard_bytes;
+
+  // Create a code patcher.
+  CodePatcher patcher(pc_, code_size);
+
+  // Add a label for checking the size of the code used for returning.
+#ifdef DEBUG
+  Label check_codesize;
+  patcher.masm()->bind(&check_codesize);
+#endif
 
   // Patch the code.
-  CodePatcher patcher(pc_, code_size);
   patcher.masm()->call(target, RelocInfo::NONE);
+
+  // Check that the size of the code generated is as expected.
+  ASSERT_EQ(kCallCodeSize,
+            patcher.masm()->SizeOfCodeGeneratedSince(&check_codesize));
 
   // Add the requested number of int3 instructions after the call.
   for (int i = 0; i < guard_bytes; i++) {
@@ -243,7 +267,7 @@ bool Operand::is_reg(Register reg) const {
 }
 
 // -----------------------------------------------------------------------------
-// Implementation of Assembler
+// Implementation of Assembler.
 
 // Emit a single byte. Must always be inlined.
 #define EMIT(x)                                 \
@@ -254,12 +278,12 @@ bool Operand::is_reg(Register reg) const {
 static void InitCoverageLog();
 #endif
 
-// spare_buffer_
+// Spare buffer.
 byte* Assembler::spare_buffer_ = NULL;
 
 Assembler::Assembler(void* buffer, int buffer_size) {
   if (buffer == NULL) {
-    // do our own buffer management
+    // Do our own buffer management.
     if (buffer_size <= kMinimalBufferSize) {
       buffer_size = kMinimalBufferSize;
 
@@ -276,7 +300,7 @@ Assembler::Assembler(void* buffer, int buffer_size) {
     buffer_size_ = buffer_size;
     own_buffer_ = true;
   } else {
-    // use externally provided buffer instead
+    // Use externally provided buffer instead.
     ASSERT(buffer_size > 0);
     buffer_ = static_cast<byte*>(buffer);
     buffer_size_ = buffer_size;
@@ -292,7 +316,7 @@ Assembler::Assembler(void* buffer, int buffer_size) {
   }
 #endif
 
-  // setup buffer pointers
+  // Setup buffer pointers.
   ASSERT(buffer_ != NULL);
   pc_ = buffer_;
   reloc_info_writer.Reposition(buffer_ + buffer_size, pc_);
@@ -320,11 +344,10 @@ Assembler::~Assembler() {
 
 
 void Assembler::GetCode(CodeDesc* desc) {
-  // finalize code
-  // (at this point overflow() may be true, but the gap ensures that
-  // we are still not overlapping instructions and relocation info)
-  ASSERT(pc_ <= reloc_info_writer.pos());  // no overlap
-  // setup desc
+  // Finalize code (at this point overflow() may be true, but the gap ensures
+  // that we are still not overlapping instructions and relocation info).
+  ASSERT(pc_ <= reloc_info_writer.pos());  // No overlap.
+  // Setup code descriptor.
   desc->buffer = buffer_;
   desc->buffer_size = buffer_size_;
   desc->instr_size = pc_offset();
@@ -344,7 +367,7 @@ void Assembler::Align(int m) {
 
 
 void Assembler::cpuid() {
-  ASSERT(CpuFeatures::IsEnabled(CpuFeatures::CPUID));
+  ASSERT(CpuFeatures::IsEnabled(CPUID));
   EnsureSpace ensure_space(this);
   last_pc_ = pc_;
   EMIT(0x0F);
@@ -411,7 +434,7 @@ void Assembler::push(const Operand& src) {
 void Assembler::pop(Register dst) {
   ASSERT(reloc_info_writer.last_pc() != NULL);
   if (FLAG_push_pop_elimination && (reloc_info_writer.last_pc() <= last_pc_)) {
-    // (last_pc_ != NULL) is rolled into the above check
+    // (last_pc_ != NULL) is rolled into the above check.
     // If a last_pc_ is set, we need to make sure that there has not been any
     // relocation information generated between the last instruction and this
     // pop instruction.
@@ -437,7 +460,7 @@ void Assembler::pop(Register dst) {
       return;
     } else if (instr == 0xff) {  // push of an operand, convert to a move
       byte op1 = last_pc_[1];
-      // Check if the operation is really a push
+      // Check if the operation is really a push.
       if ((op1 & 0x38) == (6 << 3)) {
         op1 = (op1 & ~0x38) | static_cast<byte>(dst.code() << 3);
         last_pc_[0] = 0x8b;
@@ -551,6 +574,7 @@ void Assembler::leave() {
 
 
 void Assembler::mov_b(Register dst, const Operand& src) {
+  ASSERT(dst.code() < 4);
   EnsureSpace ensure_space(this);
   last_pc_ = pc_;
   EMIT(0x8A);
@@ -568,6 +592,7 @@ void Assembler::mov_b(const Operand& dst, int8_t imm8) {
 
 
 void Assembler::mov_b(const Operand& dst, Register src) {
+  ASSERT(src.code() < 4);
   EnsureSpace ensure_space(this);
   last_pc_ = pc_;
   EMIT(0x88);
@@ -696,7 +721,7 @@ void Assembler::movzx_w(Register dst, const Operand& src) {
 
 
 void Assembler::cmov(Condition cc, Register dst, int32_t imm32) {
-  ASSERT(CpuFeatures::IsEnabled(CpuFeatures::CMOV));
+  ASSERT(CpuFeatures::IsEnabled(CMOV));
   EnsureSpace ensure_space(this);
   last_pc_ = pc_;
   UNIMPLEMENTED();
@@ -707,7 +732,7 @@ void Assembler::cmov(Condition cc, Register dst, int32_t imm32) {
 
 
 void Assembler::cmov(Condition cc, Register dst, Handle<Object> handle) {
-  ASSERT(CpuFeatures::IsEnabled(CpuFeatures::CMOV));
+  ASSERT(CpuFeatures::IsEnabled(CMOV));
   EnsureSpace ensure_space(this);
   last_pc_ = pc_;
   UNIMPLEMENTED();
@@ -718,20 +743,28 @@ void Assembler::cmov(Condition cc, Register dst, Handle<Object> handle) {
 
 
 void Assembler::cmov(Condition cc, Register dst, const Operand& src) {
-  ASSERT(CpuFeatures::IsEnabled(CpuFeatures::CMOV));
+  ASSERT(CpuFeatures::IsEnabled(CMOV));
   EnsureSpace ensure_space(this);
   last_pc_ = pc_;
-  UNIMPLEMENTED();
-  USE(cc);
-  USE(dst);
-  USE(src);
+  // Opcode: 0f 40 + cc /r.
+  EMIT(0x0F);
+  EMIT(0x40 + cc);
+  emit_operand(dst, src);
+}
+
+
+void Assembler::rep_movs() {
+  EnsureSpace ensure_space(this);
+  last_pc_ = pc_;
+  EMIT(0xF3);
+  EMIT(0xA5);
 }
 
 
 void Assembler::xchg(Register dst, Register src) {
   EnsureSpace ensure_space(this);
   last_pc_ = pc_;
-  if (src.is(eax) || dst.is(eax)) {  // Single-byte encoding
+  if (src.is(eax) || dst.is(eax)) {  // Single-byte encoding.
     EMIT(0x90 | (src.is(eax) ? dst.code() : src.code()));
   } else {
     EMIT(0x87);
@@ -826,6 +859,24 @@ void Assembler::cmpb(const Operand& op, int8_t imm8) {
 }
 
 
+void Assembler::cmpb(const Operand& dst, Register src) {
+  ASSERT(src.is_byte_register());
+  EnsureSpace ensure_space(this);
+  last_pc_ = pc_;
+  EMIT(0x38);
+  emit_operand(src, dst);
+}
+
+
+void Assembler::cmpb(Register dst, const Operand& src) {
+  ASSERT(dst.is_byte_register());
+  EnsureSpace ensure_space(this);
+  last_pc_ = pc_;
+  EMIT(0x3A);
+  emit_operand(dst, src);
+}
+
+
 void Assembler::cmpw(const Operand& op, Immediate imm16) {
   ASSERT(imm16.is_int16());
   EnsureSpace ensure_space(this);
@@ -863,6 +914,13 @@ void Assembler::cmp(const Operand& op, const Immediate& imm) {
   EnsureSpace ensure_space(this);
   last_pc_ = pc_;
   emit_arith(7, op, imm);
+}
+
+
+void Assembler::cmp(const Operand& op, Handle<Object> handle) {
+  EnsureSpace ensure_space(this);
+  last_pc_ = pc_;
+  emit_arith(7, op, Immediate(handle));
 }
 
 
@@ -1060,7 +1118,7 @@ void Assembler::sar(Register dst, uint8_t imm8) {
 }
 
 
-void Assembler::sar(Register dst) {
+void Assembler::sar_cl(Register dst) {
   EnsureSpace ensure_space(this);
   last_pc_ = pc_;
   EMIT(0xD3);
@@ -1100,7 +1158,7 @@ void Assembler::shl(Register dst, uint8_t imm8) {
 }
 
 
-void Assembler::shl(Register dst) {
+void Assembler::shl_cl(Register dst) {
   EnsureSpace ensure_space(this);
   last_pc_ = pc_;
   EMIT(0xD3);
@@ -1121,13 +1179,18 @@ void Assembler::shr(Register dst, uint8_t imm8) {
   EnsureSpace ensure_space(this);
   last_pc_ = pc_;
   ASSERT(is_uint5(imm8));  // illegal shift count
-  EMIT(0xC1);
-  EMIT(0xE8 | dst.code());
-  EMIT(imm8);
+  if (imm8 == 1) {
+    EMIT(0xD1);
+    EMIT(0xE8 | dst.code());
+  } else {
+    EMIT(0xC1);
+    EMIT(0xE8 | dst.code());
+    EMIT(imm8);
+  }
 }
 
 
-void Assembler::shr(Register dst) {
+void Assembler::shr_cl(Register dst) {
   EnsureSpace ensure_space(this);
   last_pc_ = pc_;
   EMIT(0xD3);
@@ -1135,11 +1198,16 @@ void Assembler::shr(Register dst) {
 }
 
 
-void Assembler::shr_cl(Register dst) {
+void Assembler::subb(const Operand& op, int8_t imm8) {
   EnsureSpace ensure_space(this);
   last_pc_ = pc_;
-  EMIT(0xD1);
-  EMIT(0xE8 | dst.code());
+  if (op.is_reg(eax)) {
+    EMIT(0x2c);
+  } else {
+    EMIT(0x80);
+    emit_operand(ebp, op);  // ebp == 5
+  }
+  EMIT(imm8);
 }
 
 
@@ -1154,6 +1222,15 @@ void Assembler::sub(Register dst, const Operand& src) {
   EnsureSpace ensure_space(this);
   last_pc_ = pc_;
   EMIT(0x2B);
+  emit_operand(dst, src);
+}
+
+
+void Assembler::subb(Register dst, const Operand& src) {
+  ASSERT(dst.code() < 4);
+  EnsureSpace ensure_space(this);
+  last_pc_ = pc_;
+  EMIT(0x2A);
   emit_operand(dst, src);
 }
 
@@ -1197,6 +1274,14 @@ void Assembler::test(Register reg, const Operand& op) {
   EnsureSpace ensure_space(this);
   last_pc_ = pc_;
   EMIT(0x85);
+  emit_operand(reg, op);
+}
+
+
+void Assembler::test_b(Register reg, const Operand& op) {
+  EnsureSpace ensure_space(this);
+  last_pc_ = pc_;
+  EMIT(0x84);
   emit_operand(reg, op);
 }
 
@@ -1280,7 +1365,7 @@ void Assembler::nop() {
 
 
 void Assembler::rdtsc() {
-  ASSERT(CpuFeatures::IsEnabled(CpuFeatures::RDTSC));
+  ASSERT(CpuFeatures::IsEnabled(RDTSC));
   EnsureSpace ensure_space(this);
   last_pc_ = pc_;
   EMIT(0x0F);
@@ -1348,7 +1433,7 @@ void Assembler::bind_to(Label* L, int pos) {
       if (disp.type() == Displacement::UNCONDITIONAL_JUMP) {
         ASSERT(byte_at(fixup_pos - 1) == 0xE9);  // jmp expected
       }
-      // relative address, relative to point after address
+      // Relative address, relative to point after address.
       int imm32 = pos - (fixup_pos + sizeof(int32_t));
       long_at_put(fixup_pos, imm32);
     }
@@ -1363,7 +1448,7 @@ void Assembler::link_to(Label* L, Label* appendix) {
   last_pc_ = NULL;
   if (appendix->is_linked()) {
     if (L->is_linked()) {
-      // append appendix to L's list
+      // Append appendix to L's list.
       Label p;
       Label q = *L;
       do {
@@ -1376,7 +1461,7 @@ void Assembler::link_to(Label* L, Label* appendix) {
       disp_at_put(&p, disp);
       p.Unuse();  // to avoid assertion failure in ~Label
     } else {
-      // L is empty, simply use appendix
+      // L is empty, simply use appendix.
       *L = *appendix;
     }
   }
@@ -1399,11 +1484,11 @@ void Assembler::call(Label* L) {
     const int long_size = 5;
     int offs = L->pos() - pc_offset();
     ASSERT(offs <= 0);
-    // 1110 1000 #32-bit disp
+    // 1110 1000 #32-bit disp.
     EMIT(0xE8);
     emit(offs - long_size);
   } else {
-    // 1110 1000 #32-bit disp
+    // 1110 1000 #32-bit disp.
     EMIT(0xE8);
     emit_disp(L, Displacement::OTHER);
   }
@@ -1446,16 +1531,16 @@ void Assembler::jmp(Label* L) {
     int offs = L->pos() - pc_offset();
     ASSERT(offs <= 0);
     if (is_int8(offs - short_size)) {
-      // 1110 1011 #8-bit disp
+      // 1110 1011 #8-bit disp.
       EMIT(0xEB);
       EMIT((offs - short_size) & 0xFF);
     } else {
-      // 1110 1001 #32-bit disp
+      // 1110 1001 #32-bit disp.
       EMIT(0xE9);
       emit(offs - long_size);
     }
   } else {
-    // 1110 1001 #32-bit disp
+    // 1110 1001 #32-bit disp.
     EMIT(0xE9);
     emit_disp(L, Displacement::UNCONDITIONAL_JUMP);
   }
@@ -1525,7 +1610,7 @@ void Assembler::j(Condition cc, byte* entry, RelocInfo::Mode rmode, Hint hint) {
   last_pc_ = pc_;
   ASSERT((0 <= cc) && (cc < 16));
   if (FLAG_emit_branch_hints && hint != no_hint) EMIT(hint);
-  // 0000 1111 1000 tttn #32-bit disp
+  // 0000 1111 1000 tttn #32-bit disp.
   EMIT(0x0F);
   EMIT(0x80 | cc);
   emit(entry - (pc_ + sizeof(int32_t)), rmode);
@@ -1543,8 +1628,7 @@ void Assembler::j(Condition cc, Handle<Code> code, Hint hint) {
 }
 
 
-// FPU instructions
-
+// FPU instructions.
 
 void Assembler::fld(int i) {
   EnsureSpace ensure_space(this);
@@ -1553,11 +1637,26 @@ void Assembler::fld(int i) {
 }
 
 
+void Assembler::fstp(int i) {
+  EnsureSpace ensure_space(this);
+  last_pc_ = pc_;
+  emit_farith(0xDD, 0xD8, i);
+}
+
+
 void Assembler::fld1() {
   EnsureSpace ensure_space(this);
   last_pc_ = pc_;
   EMIT(0xD9);
   EMIT(0xE8);
+}
+
+
+void Assembler::fldpi() {
+  EnsureSpace ensure_space(this);
+  last_pc_ = pc_;
+  EMIT(0xD9);
+  EMIT(0xEB);
 }
 
 
@@ -1601,6 +1700,14 @@ void Assembler::fstp_d(const Operand& adr) {
 }
 
 
+void Assembler::fst_d(const Operand& adr) {
+  EnsureSpace ensure_space(this);
+  last_pc_ = pc_;
+  EMIT(0xDD);
+  emit_operand(edx, adr);
+}
+
+
 void Assembler::fild_s(const Operand& adr) {
   EnsureSpace ensure_space(this);
   last_pc_ = pc_;
@@ -1626,10 +1733,19 @@ void Assembler::fistp_s(const Operand& adr) {
 
 
 void Assembler::fisttp_s(const Operand& adr) {
-  ASSERT(CpuFeatures::IsEnabled(CpuFeatures::SSE3));
+  ASSERT(CpuFeatures::IsEnabled(SSE3));
   EnsureSpace ensure_space(this);
   last_pc_ = pc_;
   EMIT(0xDB);
+  emit_operand(ecx, adr);
+}
+
+
+void Assembler::fisttp_d(const Operand& adr) {
+  ASSERT(CpuFeatures::IsEnabled(SSE3));
+  EnsureSpace ensure_space(this);
+  last_pc_ = pc_;
+  EMIT(0xDD);
   emit_operand(ecx, adr);
 }
 
@@ -1814,6 +1930,22 @@ void Assembler::fucompp() {
 }
 
 
+void Assembler::fucomi(int i) {
+  EnsureSpace ensure_space(this);
+  last_pc_ = pc_;
+  EMIT(0xDB);
+  EMIT(0xE8 + i);
+}
+
+
+void Assembler::fucomip() {
+  EnsureSpace ensure_space(this);
+  last_pc_ = pc_;
+  EMIT(0xDF);
+  EMIT(0xE9);
+}
+
+
 void Assembler::fcompp() {
   EnsureSpace ensure_space(this);
   last_pc_ = pc_;
@@ -1871,7 +2003,7 @@ void Assembler::setcc(Condition cc, Register reg) {
 
 
 void Assembler::cvttss2si(Register dst, const Operand& src) {
-  ASSERT(CpuFeatures::IsEnabled(CpuFeatures::SSE2));
+  ASSERT(CpuFeatures::IsEnabled(SSE2));
   EnsureSpace ensure_space(this);
   last_pc_ = pc_;
   EMIT(0xF3);
@@ -1882,7 +2014,7 @@ void Assembler::cvttss2si(Register dst, const Operand& src) {
 
 
 void Assembler::cvttsd2si(Register dst, const Operand& src) {
-  ASSERT(CpuFeatures::IsEnabled(CpuFeatures::SSE2));
+  ASSERT(CpuFeatures::IsEnabled(SSE2));
   EnsureSpace ensure_space(this);
   last_pc_ = pc_;
   EMIT(0xF2);
@@ -1893,7 +2025,7 @@ void Assembler::cvttsd2si(Register dst, const Operand& src) {
 
 
 void Assembler::cvtsi2sd(XMMRegister dst, const Operand& src) {
-  ASSERT(CpuFeatures::IsEnabled(CpuFeatures::SSE2));
+  ASSERT(CpuFeatures::IsEnabled(SSE2));
   EnsureSpace ensure_space(this);
   last_pc_ = pc_;
   EMIT(0xF2);
@@ -1903,8 +2035,19 @@ void Assembler::cvtsi2sd(XMMRegister dst, const Operand& src) {
 }
 
 
+void Assembler::cvtss2sd(XMMRegister dst, XMMRegister src) {
+  ASSERT(CpuFeatures::IsEnabled(SSE2));
+  EnsureSpace ensure_space(this);
+  last_pc_ = pc_;
+  EMIT(0xF3);
+  EMIT(0x0F);
+  EMIT(0x5A);
+  emit_sse_operand(dst, src);
+}
+
+
 void Assembler::addsd(XMMRegister dst, XMMRegister src) {
-  ASSERT(CpuFeatures::IsEnabled(CpuFeatures::SSE2));
+  ASSERT(CpuFeatures::IsEnabled(SSE2));
   EnsureSpace ensure_space(this);
   last_pc_ = pc_;
   EMIT(0xF2);
@@ -1915,7 +2058,7 @@ void Assembler::addsd(XMMRegister dst, XMMRegister src) {
 
 
 void Assembler::mulsd(XMMRegister dst, XMMRegister src) {
-  ASSERT(CpuFeatures::IsEnabled(CpuFeatures::SSE2));
+  ASSERT(CpuFeatures::IsEnabled(SSE2));
   EnsureSpace ensure_space(this);
   last_pc_ = pc_;
   EMIT(0xF2);
@@ -1926,7 +2069,7 @@ void Assembler::mulsd(XMMRegister dst, XMMRegister src) {
 
 
 void Assembler::subsd(XMMRegister dst, XMMRegister src) {
-  ASSERT(CpuFeatures::IsEnabled(CpuFeatures::SSE2));
+  ASSERT(CpuFeatures::IsEnabled(SSE2));
   EnsureSpace ensure_space(this);
   last_pc_ = pc_;
   EMIT(0xF2);
@@ -1937,12 +2080,99 @@ void Assembler::subsd(XMMRegister dst, XMMRegister src) {
 
 
 void Assembler::divsd(XMMRegister dst, XMMRegister src) {
-  ASSERT(CpuFeatures::IsEnabled(CpuFeatures::SSE2));
+  ASSERT(CpuFeatures::IsEnabled(SSE2));
   EnsureSpace ensure_space(this);
   last_pc_ = pc_;
   EMIT(0xF2);
   EMIT(0x0F);
   EMIT(0x5E);
+  emit_sse_operand(dst, src);
+}
+
+
+void Assembler::xorpd(XMMRegister dst, XMMRegister src) {
+  ASSERT(CpuFeatures::IsEnabled(SSE2));
+  EnsureSpace ensure_space(this);
+  last_pc_ = pc_;
+  EMIT(0x66);
+  EMIT(0x0F);
+  EMIT(0x57);
+  emit_sse_operand(dst, src);
+}
+
+
+void Assembler::sqrtsd(XMMRegister dst, XMMRegister src) {
+  EnsureSpace ensure_space(this);
+  last_pc_ = pc_;
+  EMIT(0xF2);
+  EMIT(0x0F);
+  EMIT(0x51);
+  emit_sse_operand(dst, src);
+}
+
+
+void Assembler::comisd(XMMRegister dst, XMMRegister src) {
+  ASSERT(CpuFeatures::IsEnabled(SSE2));
+  EnsureSpace ensure_space(this);
+  last_pc_ = pc_;
+  EMIT(0x66);
+  EMIT(0x0F);
+  EMIT(0x2F);
+  emit_sse_operand(dst, src);
+}
+
+
+void Assembler::ucomisd(XMMRegister dst, XMMRegister src) {
+  ASSERT(CpuFeatures::IsEnabled(SSE2));
+  EnsureSpace ensure_space(this);
+  last_pc_ = pc_;
+  EMIT(0x66);
+  EMIT(0x0F);
+  EMIT(0x2E);
+  emit_sse_operand(dst, src);
+}
+
+
+void Assembler::movdqa(const Operand& dst, XMMRegister src ) {
+  ASSERT(CpuFeatures::IsEnabled(SSE2));
+  EnsureSpace ensure_space(this);
+  last_pc_ = pc_;
+  EMIT(0x66);
+  EMIT(0x0F);
+  EMIT(0x7F);
+  emit_sse_operand(src, dst);
+}
+
+
+void Assembler::movdqa(XMMRegister dst, const Operand& src) {
+  ASSERT(CpuFeatures::IsEnabled(SSE2));
+  EnsureSpace ensure_space(this);
+  last_pc_ = pc_;
+  EMIT(0x66);
+  EMIT(0x0F);
+  EMIT(0x6F);
+  emit_sse_operand(dst, src);
+}
+
+
+void Assembler::movdqu(const Operand& dst, XMMRegister src ) {
+  ASSERT(CpuFeatures::IsEnabled(SSE2));
+  EnsureSpace ensure_space(this);
+  last_pc_ = pc_;
+  EMIT(0xF3);
+  EMIT(0x0F);
+  EMIT(0x7F);
+  emit_sse_operand(src, dst);
+}
+
+
+void Assembler::movdqu(XMMRegister dst, const Operand& src) {
+  ASSERT(CpuFeatures::IsEnabled(SSE2));
+  EnsureSpace ensure_space(this);
+  last_pc_ = pc_;
+  EMIT(0xF3);
+  EMIT(0x0F);
+  EMIT(0x6F);
   emit_sse_operand(dst, src);
 }
 
@@ -1962,7 +2192,7 @@ void Assembler::movdbl(const Operand& dst, XMMRegister src) {
 
 
 void Assembler::movsd(const Operand& dst, XMMRegister src ) {
-  ASSERT(CpuFeatures::IsEnabled(CpuFeatures::SSE2));
+  ASSERT(CpuFeatures::IsEnabled(SSE2));
   EnsureSpace ensure_space(this);
   last_pc_ = pc_;
   EMIT(0xF2);  // double
@@ -1973,12 +2203,56 @@ void Assembler::movsd(const Operand& dst, XMMRegister src ) {
 
 
 void Assembler::movsd(XMMRegister dst, const Operand& src) {
-  ASSERT(CpuFeatures::IsEnabled(CpuFeatures::SSE2));
+  ASSERT(CpuFeatures::IsEnabled(SSE2));
   EnsureSpace ensure_space(this);
   last_pc_ = pc_;
   EMIT(0xF2);  // double
   EMIT(0x0F);
   EMIT(0x10);  // load
+  emit_sse_operand(dst, src);
+}
+
+void Assembler::movsd(XMMRegister dst, XMMRegister src) {
+  ASSERT(CpuFeatures::IsEnabled(SSE2));
+  EnsureSpace ensure_space(this);
+  last_pc_ = pc_;
+  EMIT(0xF2);
+  EMIT(0x0F);
+  EMIT(0x10);
+  emit_sse_operand(dst, src);
+}
+
+
+void Assembler::movd(XMMRegister dst, const Operand& src) {
+  ASSERT(CpuFeatures::IsEnabled(SSE2));
+  EnsureSpace ensure_space(this);
+  last_pc_ = pc_;
+  EMIT(0x66);
+  EMIT(0x0F);
+  EMIT(0x6E);
+  emit_sse_operand(dst, src);
+}
+
+
+void Assembler::pxor(XMMRegister dst, XMMRegister src) {
+  ASSERT(CpuFeatures::IsEnabled(SSE2));
+  EnsureSpace ensure_space(this);
+  last_pc_ = pc_;
+  EMIT(0x66);
+  EMIT(0x0F);
+  EMIT(0xEF);
+  emit_sse_operand(dst, src);
+}
+
+
+void Assembler::ptest(XMMRegister dst, XMMRegister src) {
+  ASSERT(CpuFeatures::IsEnabled(SSE2));
+  EnsureSpace ensure_space(this);
+  last_pc_ = pc_;
+  EMIT(0x66);
+  EMIT(0x0F);
+  EMIT(0x38);
+  EMIT(0x17);
   emit_sse_operand(dst, src);
 }
 
@@ -2049,10 +2323,10 @@ void Assembler::WriteRecordedPositions() {
 
 
 void Assembler::GrowBuffer() {
-  ASSERT(overflow());  // should not call this otherwise
+  ASSERT(overflow());
   if (!own_buffer_) FATAL("external code buffer is too small");
 
-  // compute new buffer size
+  // Compute new buffer size.
   CodeDesc desc;  // the new buffer
   if (buffer_size_ < 4*KB) {
     desc.buffer_size = 4*KB;
@@ -2062,11 +2336,11 @@ void Assembler::GrowBuffer() {
   // Some internal data structures overflow for very large buffers,
   // they must ensure that kMaximalBufferSize is not too large.
   if ((desc.buffer_size > kMaximalBufferSize) ||
-      (desc.buffer_size > Heap::OldGenerationSize())) {
+      (desc.buffer_size > Heap::MaxOldGenerationSize())) {
     V8::FatalProcessOutOfMemory("Assembler::GrowBuffer");
   }
 
-  // setup new buffer
+  // Setup new buffer.
   desc.buffer = NewArray<byte>(desc.buffer_size);
   desc.instr_size = pc_offset();
   desc.reloc_size = (buffer_ + buffer_size_) - (reloc_info_writer.pos());
@@ -2077,14 +2351,14 @@ void Assembler::GrowBuffer() {
   memset(desc.buffer, 0xCC, desc.buffer_size);
 #endif
 
-  // copy the data
+  // Copy the data.
   int pc_delta = desc.buffer - buffer_;
   int rc_delta = (desc.buffer + desc.buffer_size) - (buffer_ + buffer_size_);
   memmove(desc.buffer, buffer_, desc.instr_size);
   memmove(rc_delta + reloc_info_writer.pos(),
           reloc_info_writer.pos(), desc.reloc_size);
 
-  // switch buffers
+  // Switch buffers.
   if (spare_buffer_ == NULL && buffer_size_ == kMinimalBufferSize) {
     spare_buffer_ = buffer_;
   } else {
@@ -2099,7 +2373,7 @@ void Assembler::GrowBuffer() {
   reloc_info_writer.Reposition(reloc_info_writer.pos() + rc_delta,
                                reloc_info_writer.last_pc() + pc_delta);
 
-  // relocate runtime entries
+  // Relocate runtime entries.
   for (RelocIterator it(desc); !it.done(); it.next()) {
     RelocInfo::Mode rmode = it.rinfo()->rmode();
     if (rmode == RelocInfo::RUNTIME_ENTRY) {
@@ -2182,10 +2456,15 @@ void Assembler::dd(uint32_t data, RelocInfo::Mode reloc_info) {
 void Assembler::RecordRelocInfo(RelocInfo::Mode rmode, intptr_t data) {
   ASSERT(rmode != RelocInfo::NONE);
   // Don't record external references unless the heap will be serialized.
-  if (rmode == RelocInfo::EXTERNAL_REFERENCE &&
-      !Serializer::enabled() &&
-      !FLAG_debug_code) {
-    return;
+  if (rmode == RelocInfo::EXTERNAL_REFERENCE) {
+#ifdef DEBUG
+    if (!Serializer::enabled()) {
+      Serializer::TooLateToEnableNow();
+    }
+#endif
+    if (!Serializer::enabled() && !FLAG_debug_code) {
+      return;
+    }
   }
   RelocInfo rinfo(pc_, rmode, data);
   reloc_info_writer.Write(&rinfo);

@@ -28,6 +28,7 @@
 #ifndef V8_X64_VIRTUAL_FRAME_X64_H_
 #define V8_X64_VIRTUAL_FRAME_X64_H_
 
+#include "number-info.h"
 #include "register-allocator.h"
 #include "scopes.h"
 
@@ -72,16 +73,17 @@ class VirtualFrame : public ZoneObject {
   static const int kIllegalIndex = -1;
 
   // Construct an initial virtual frame on entry to a JS function.
-  VirtualFrame();
+  inline VirtualFrame();
 
   // Construct a virtual frame as a clone of an existing one.
-  explicit VirtualFrame(VirtualFrame* original);
+  explicit inline VirtualFrame(VirtualFrame* original);
 
   CodeGenerator* cgen() { return CodeGeneratorScope::Current(); }
   MacroAssembler* masm() { return cgen()->masm(); }
 
   // Create a duplicate of an existing valid frame element.
-  FrameElement CopyElementAt(int index);
+  FrameElement CopyElementAt(int index,
+    NumberInfo::Type info = NumberInfo::kUninitialized);
 
   // The number of elements on the virtual frame.
   int element_count() { return elements_.length(); }
@@ -199,6 +201,9 @@ class VirtualFrame : public ZoneObject {
   // avoids generating unnecessary merge code when jumping to the
   // shared return site.  Emits code for spills.
   void PrepareForReturn();
+
+  // Number of local variables after when we use a loop for allocating.
+  static const int kLocalVarBound = 7;
 
   // Allocate and initialize the frame-allocated locals.
   void AllocateStackSlots();
@@ -318,6 +323,10 @@ class VirtualFrame : public ZoneObject {
   Result CallRuntime(Runtime::Function* f, int arg_count);
   Result CallRuntime(Runtime::FunctionId id, int arg_count);
 
+#ifdef ENABLE_DEBUGGER_SUPPORT
+  void DebugBreak();
+#endif
+
   // Invoke builtin given the number of arguments it expects on (and
   // removes from) the stack.
   Result InvokeBuiltin(Builtins::JavaScript id,
@@ -340,9 +349,9 @@ class VirtualFrame : public ZoneObject {
   // of the frame.  Key and receiver are not dropped.
   Result CallKeyedStoreIC();
 
-  // Call call IC.  Arguments, reciever, and function name are found
-  // on top of the frame.  Function name slot is not dropped.  The
-  // argument count does not include the receiver.
+  // Call call IC.  Function name, arguments, and receiver are found on top
+  // of the frame and dropped by the call.
+  // The argument count does not include the receiver.
   Result CallCallIC(RelocInfo::Mode mode, int arg_count, int loop_nesting);
 
   // Allocate and call JS function as constructor.  Arguments,
@@ -373,22 +382,28 @@ class VirtualFrame : public ZoneObject {
 
   // Push an element on top of the expression stack and emit a
   // corresponding push instruction.
-  void EmitPush(Register reg);
-  void EmitPush(const Operand& operand);
-  void EmitPush(Immediate immediate);
+  void EmitPush(Register reg,
+                NumberInfo::Type info = NumberInfo::kUnknown);
+  void EmitPush(const Operand& operand,
+                NumberInfo::Type info = NumberInfo::kUnknown);
+  void EmitPush(Heap::RootListIndex index,
+                NumberInfo::Type info = NumberInfo::kUnknown);
+  void EmitPush(Immediate immediate,
+                NumberInfo::Type info = NumberInfo::kUnknown);
+  void EmitPush(Smi* value);
   // Uses kScratchRegister, emits appropriate relocation info.
   void EmitPush(Handle<Object> value);
 
   // Push an element on the virtual frame.
-  void Push(Register reg);
-  void Push(Handle<Object> value);
-  void Push(Smi* value) { Push(Handle<Object>(value)); }
+  inline void Push(Register reg, NumberInfo::Type info = NumberInfo::kUnknown);
+  inline void Push(Handle<Object> value);
+  inline void Push(Smi* value);
 
   // Pushing a result invalidates it (its contents become owned by the
   // frame).
   void Push(Result* result) {
     if (result->is_register()) {
-      Push(result->reg());
+      Push(result->reg(), result->number_info());
     } else {
       ASSERT(result->is_constant());
       Push(result->handle());
@@ -399,7 +414,7 @@ class VirtualFrame : public ZoneObject {
   // Nip removes zero or more elements from immediately below the top
   // of the frame, leaving the previous top-of-frame value on top of
   // the frame.  Nip(k) is equivalent to x = Pop(), Drop(k), Push(x).
-  void Nip(int num_dropped);
+  inline void Nip(int num_dropped);
 
  private:
   static const int kLocal0Offset = JavaScriptFrameConstants::kLocal0Offset;
@@ -491,7 +506,7 @@ class VirtualFrame : public ZoneObject {
 
   // Push a copy of a frame slot (typically a local or parameter) on top of
   // the frame.
-  void PushFrameSlotAt(int index);
+  inline void PushFrameSlotAt(int index);
 
   // Push a the value of a frame slot (typically a local or parameter) on
   // top of the frame and invalidate the slot.
@@ -542,7 +557,7 @@ class VirtualFrame : public ZoneObject {
   // (via PrepareForCall).
   Result RawCallCodeObject(Handle<Code> code, RelocInfo::Mode rmode);
 
-  bool Equals(VirtualFrame* other);
+  inline bool Equals(VirtualFrame* other);
 
   // Classes that need raw access to the elements_ array.
   friend class DeferredCode;

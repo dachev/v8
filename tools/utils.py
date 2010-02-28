@@ -55,6 +55,10 @@ def GuessOS():
     return 'win32'
   elif id == 'FreeBSD':
     return 'freebsd'
+  elif id == 'OpenBSD':
+    return 'openbsd'
+  elif id == 'SunOS':
+    return 'solaris'
   else:
     return None
 
@@ -64,6 +68,8 @@ def GuessArchitecture():
   if id.startswith('arm'):
     return 'arm'
   elif (not id) or (not re.match('(x|i[3-6])86', id) is None):
+    return 'ia32'
+  elif id == 'i86pc':
     return 'ia32'
   else:
     return None

@@ -78,10 +78,7 @@ class RegExpMacroAssemblerIA32: public NativeRegExpMacroAssembler {
   // Checks whether the given offset from the current position is before
   // the end of the string.
   virtual void CheckPosition(int cp_offset, Label* on_outside_input);
-  virtual bool CheckSpecialCharacterClass(uc16 type,
-                                          int cp_offset,
-                                          bool check_offset,
-                                          Label* on_no_match);
+  virtual bool CheckSpecialCharacterClass(uc16 type, Label* on_no_match);
   virtual void Fail();
   virtual Handle<Object> GetCode(Handle<String> source);
   virtual void GoTo(Label* label);
@@ -107,6 +104,13 @@ class RegExpMacroAssemblerIA32: public NativeRegExpMacroAssembler {
   virtual void ClearRegisters(int reg_from, int reg_to);
   virtual void WriteStackPointerToRegister(int reg);
 
+  // Called from RegExp if the stack-guard is triggered.
+  // If the code object is relocated, the return address is fixed before
+  // returning.
+  static int CheckStackGuardState(Address* return_address,
+                                  Code* re_code,
+                                  Address re_frame);
+
  private:
   // Offsets from ebp of function parameters and stored registers.
   static const int kFramePointer = 0;
@@ -119,8 +123,8 @@ class RegExpMacroAssemblerIA32: public NativeRegExpMacroAssembler {
   static const int kInputStart = kStartIndex + kPointerSize;
   static const int kInputEnd = kInputStart + kPointerSize;
   static const int kRegisterOutput = kInputEnd + kPointerSize;
-  static const int kAtStart = kRegisterOutput + kPointerSize;
-  static const int kStackHighEnd = kAtStart + kPointerSize;
+  static const int kStackHighEnd = kRegisterOutput + kPointerSize;
+  static const int kDirectCall = kStackHighEnd + kPointerSize;
   // Below the frame pointer - local stack variables.
   // When adding local variables remember to push space for them in
   // the frame in GetCode.
@@ -128,8 +132,9 @@ class RegExpMacroAssemblerIA32: public NativeRegExpMacroAssembler {
   static const int kBackup_edi = kBackup_esi - kPointerSize;
   static const int kBackup_ebx = kBackup_edi - kPointerSize;
   static const int kInputStartMinusOne = kBackup_ebx - kPointerSize;
+  static const int kAtStart = kInputStartMinusOne - kPointerSize;
   // First register address. Following registers are below it on the stack.
-  static const int kRegisterZero = kInputStartMinusOne - kPointerSize;
+  static const int kRegisterZero = kAtStart - kPointerSize;
 
   // Initial size of code buffer.
   static const size_t kRegExpCodeSize = 1024;
@@ -144,22 +149,8 @@ class RegExpMacroAssemblerIA32: public NativeRegExpMacroAssembler {
   // Check whether we are exceeding the stack limit on the backtrack stack.
   void CheckStackLimit();
 
-  // Called from RegExp if the stack-guard is triggered.
-  // If the code object is relocated, the return address is fixed before
-  // returning.
-  static int CheckStackGuardState(Address* return_address,
-                                  Code* re_code,
-                                  Address re_frame);
-
   // Generate a call to CheckStackGuardState.
   void CallCheckStackGuardState(Register scratch);
-
-  // Called from RegExp if the backtrack stack limit is hit.
-  // Tries to expand the stack. Returns the new stack-pointer if
-  // successful, and updates the stack_top address, or returns 0 if unable
-  // to grow the stack.
-  // This function must not trigger a garbage collection.
-  static Address GrowStack(Address stack_pointer, Address* stack_top);
 
   // The ebp-relative location of a regexp register.
   Operand register_location(int register_index);
@@ -195,21 +186,6 @@ class RegExpMacroAssemblerIA32: public NativeRegExpMacroAssembler {
   // Pops a value from the backtrack stack. Reads the word at the stack pointer
   // (ecx) and increments it by a word size.
   inline void Pop(Register target);
-
-  // Before calling a C-function from generated code, align arguments on stack.
-  // After aligning the frame, arguments must be stored in esp[0], esp[4],
-  // etc., not pushed. The argument count assumes all arguments are word sized.
-  // Some compilers/platforms require the stack to be aligned when calling
-  // C++ code.
-  // Needs a scratch register to do some arithmetic. This register will be
-  // trashed.
-  inline void FrameAlign(int num_arguments, Register scratch);
-
-  // Calls a C function and cleans up the space for arguments allocated
-  // by FrameAlign. The called function is not allowed to trigger a garbage
-  // collection, since that might move the code and invalidate the return
-  // address (unless this is somehow accounted for).
-  inline void CallCFunction(Address function_address, int num_arguments);
 
   MacroAssembler* masm_;
 
